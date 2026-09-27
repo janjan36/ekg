@@ -1,16 +1,19 @@
-/* Steuerung der Oberfläche: Verbindung, Live-Anzeige, Aufnahme, Aufnahmeliste und Detailansicht. */
+/* Steuerung der Oberfläche: Reiter, Verbindung, Live-Anzeige, Aufnahme, geführte Tests,
+ * Aufnahmeliste, Detailansicht und Verlauf. */
 (function () {
   'use strict';
 
   const FS = 130;
   const MIN_SAVE_SECONDS = 5;
   const $ = id => document.getElementById(id);
+  const de = (v, d = 0) => (v == null || !isFinite(v) ? '–' : v.toFixed(d).replace('.', ','));
 
   /* ---------- Einstellungen (pro Browser gemerkt) ---------- */
   const SETTINGS_KEY = 'polar-ekg-settings';
   const settings = Object.assign({
     speed: 25, gain: 10, highpass: true, notch: true,
-    pxPerMm: EcgCharts.DEFAULT_PX_PER_MM, csv: 'de', duration: 300
+    pxPerMm: EcgCharts.DEFAULT_PX_PER_MM, csv: 'de', duration: 300,
+    upright: null, uprightDate: null, age: null, resonanceRate: null, bfMinutes: 5
   }, (() => {
     try { return JSON.parse(localStorage.getItem(SETTINGS_KEY)) || {}; } catch (_) { return {}; }
   })());
@@ -24,9 +27,11 @@
   let source = null;
   let connected = false;
   let liveFilter = new EkgFilters.FilterChain(FS, settings);
-  let liveRR = [];          // { t: ms-Zeitstempel, rr }
+  let liveBeats = [];       // { t: Wanduhr in s, rr } der letzten 3 min
   let liveResp = null;      // Resp.LiveRespiration
-  let respShownAt = 0;
+  let posture = null;       // Posture.PostureTracker
+  let accShownAt = 0;
+  let dfaShownAt = 0;
   const LIVE_ANALYSIS_S = 30;
   let liveRaw = [];         // Rohdaten der letzten 30 s für die Live-Auswertung
   let liveAbs = 0;          // empfangene Werte seit live.clear() – gleiche Zählung wie im Live-Chart
@@ -34,9 +39,10 @@
   let liveCounts = { S: 0, V: 0 };
   let analysisTimer = 0;
   let rec = null;           // laufende Aufnahme
-  let current = null;       // geöffnete Aufnahme { meta, data, stats }
+  let current = null;       // geöffnete Aufnahme
   let wakeLock = null;
   let timerHandle = 0;
+  let activeTab = 'messen';
 
   const live = new EcgCharts.LiveEcgChart($('liveCanvas'), FS);
   const review = new EcgCharts.ReviewEcgChart($('reviewScroll'), $('reviewInner'), $('reviewCanvas'), FS);
@@ -51,6 +57,20 @@
       $('beatLegend').textContent = `Durchschnittsschlag aus ${current.analysis.avgCount} Schlägen · ${text}`;
     }
   };
+  const psdChart = new Charts2.PsdChart($('psdCanvas'));
+  const poincareChart = new Charts2.PoincareChart($('poincareCanvas'));
+  const testChart = new Charts2.EventHrChart($('testChart'));
+
+  /* ---------- Reiter ---------- */
+  function showTab(name) {
+    activeTab = name;
+    document.querySelectorAll('.tabs [data-tab]').forEach(b => b.setAttribute('aria-selected', String(b.dataset.tab === name)));
+    document.querySelectorAll('[data-panel]').forEach(el => {
+      // Die Detailansicht nur zeigen, wenn eine Aufnahme geöffnet ist
+      el.hidden = el.dataset.panel !== name || (el.id === 'review' && !current);
+    });
+    if (name === 'verlauf' && trendView) trendView.render();
+  }
 
   /* ---------- Status-Anzeige ---------- */
   function setStatus(text, state) {
@@ -64,19 +84,26 @@
     $('btnDemo').hidden = connected;
     $('btnDisconnect').hidden = !connected;
     $('btnConnect').disabled = !PolarH10Source.isSupported();
-    $('btnRecord').disabled = !connected;
+    $('btnRecord').disabled = !connected || (rec && rec.test);
     $('btnRecord').classList.toggle('active', !!rec);
     $('btnRecordLabel').textContent = rec ? 'Aufnahme beenden' : 'Aufnahme starten';
     $('selDuration').disabled = !!rec;
+    $('btnCalibPosture').disabled = !connected || !posture;
+    document.querySelectorAll('[data-test]').forEach(b => { b.disabled = !!rec; });
   }
 
   function resetLiveValues() {
-    ['valHr', 'valRr', 'valRmssd', 'valContact', 'valResp'].forEach(id => { $(id).textContent = '–'; });
-    $('valSignal').textContent = '';
+    ['valHr', 'valRr', 'valRmssd', 'valResp', 'valDfa', 'valPosture'].forEach(id => { $(id).textContent = '–'; });
+    $('valSignal').textContent = 'ms';
     $('valRespUnit').textContent = '/min';
+    $('valDfaZone').textContent = ' ';
+    $('valMotion').textContent = ' ';
     liveResp = null;
+    posture = null;
+    liveBeats = [];
     respLive.setData({}, 30, 'Warte auf Atemdaten …');
     $('battery').hidden = true;
+    $('contact').hidden = true;
     resetLiveAnalysis();
   }
 
@@ -133,6 +160,18 @@
       : '–';
   }
 
+  // DFA α1 über die letzten 2 min (fürs Training), alle 5 s
+  function updateLiveDfa() {
+    const now = Date.now() / 1000;
+    if (now - dfaShownAt < 5) return;
+    dfaShownAt = now;
+    const win = liveBeats.filter(b => now - b.t <= 120).map(b => b.rr);
+    const r = win.length >= 60 ? HrvX.dfaOf(win) : null;
+    const zone = r && HrvX.dfaZone(r.a1);
+    $('valDfa').textContent = r && r.a1 != null ? de(r.a1, 2) : '–';
+    $('valDfaZone').textContent = zone ? zone.text : (win.length ? `ab 60 Schlägen (${win.length})` : ' ');
+  }
+
   /* ---------- Handler für Gurt bzw. Demo ---------- */
   const handlers = {
     onEcg(samples, info) {
@@ -142,36 +181,49 @@
       for (let i = 0; i < samples.length; i++) liveRaw.push(samples[i]);
       liveAbs += samples.length;
       if (liveRaw.length > LIVE_ANALYSIS_S * FS) liveRaw.splice(0, liveRaw.length - LIVE_ANALYSIS_S * FS);
-      if (info.lost) $('valSignal').textContent = `${info.lost} Werte verloren`;
+      if (info.lost) $('valSignal').textContent = `ms · ${info.lost} Werte verloren`;
       if (rec) {
         rec.lost += info.lost || 0;
         const room = rec.maxSamples - rec.ecg.length;
         for (let i = 0; i < Math.min(room, samples.length); i++) rec.ecg.push(samples[i]);
-        if (rec.ecg.length >= rec.maxSamples) stopRecording();
+        if (rec.ecg.length >= rec.maxSamples && !rec.test) stopRecording();
       }
     },
 
     onAcc(xyz, info) {
       if (!liveResp || liveResp.accFs !== info.fs) liveResp = new Resp.LiveRespiration(info.fs);
+      if (!posture || posture.fs !== info.fs) { posture = new Posture.PostureTracker(info.fs); updateButtons(); }
       liveResp.push(xyz);
+      posture.push(xyz);
       if (rec) {
         rec.accFs = info.fs;
         for (let i = 0; i < xyz.length; i++) rec.acc.push(xyz[i]);
       }
       const now = Date.now();
-      if (now - respShownAt < 500) return;
-      respShownAt = now;
+      if (now - accShownAt < 500) return;
+      accShownAt = now;
       const r = liveResp.result();
       respLive.setData(r, 30, 'Atemkurve erscheint nach einigen Sekunden …');
       $('valResp').textContent = r.rate ? Math.round(r.rate) : '–';
+      const ps = posture.state(settings.upright);
+      if (ps) {
+        $('valPosture').textContent = ps.posture;
+        $('valMotion').textContent = ps.motion;
+      }
     },
 
     onHr({ hr, rr, contact }) {
       $('valHr').textContent = hr || '–';
-      if (contact !== null) $('valContact').textContent = contact ? 'ja' : 'nein';
-      const now = Date.now();
+      if (contact !== null) {
+        $('contact').hidden = false;
+        $('contact').textContent = contact ? 'Hautkontakt ✓' : 'kein Hautkontakt';
+      }
+      // Schlagzeiten rückwärts vom Eintreffen der Meldung verteilen
+      const now = Date.now() / 1000;
+      let t = now - rr.reduce((s, v) => s + v / 1000, 0);
       for (const v of rr) {
-        liveRR.push({ t: now, rr: v });
+        t += v / 1000;
+        liveBeats.push({ t, rr: v });
         if (rec) {
           rec.rrElapsed += v / 1000;
           rec.rr.push(v);
@@ -179,9 +231,10 @@
         }
       }
       if (rr.length) $('valRr').textContent = Math.round(rr[rr.length - 1]);
-      liveRR = liveRR.filter(p => now - p.t <= 60000);
-      const s = Hrv.compute(liveRR.map(p => p.rr));
+      liveBeats = liveBeats.filter(b => now - b.t <= 180);
+      const s = Hrv.compute(liveBeats.filter(b => now - b.t <= 60).map(b => b.rr));
       $('valRmssd').textContent = s && s.rmssd != null ? Math.round(s.rmssd) : '–';
+      updateLiveDfa();
     },
 
     onBattery(level) {
@@ -203,7 +256,8 @@
         updateButtons();
         return;
       }
-      if (rec) await stopRecording(manual ? '' : 'Verbindung unterbrochen');
+      runner.abort();
+      if (rec) await stopRecording({ reason: manual ? '' : 'Verbindung unterbrochen' });
       clearInterval(analysisTimer);
       source = null;
       live.clear();
@@ -216,7 +270,6 @@
   async function connect(SourceClass) {
     source = new SourceClass(handlers);
     liveFilter = new EkgFilters.FilterChain(FS, settings);
-    liveRR = [];
     live.clear();
     resetLiveValues();
     $('connectNotice').hidden = true;
@@ -255,27 +308,32 @@
   }
 
   /* ---------- Aufnahme ---------- */
-  async function startRecording() {
+  // opts: { maxSeconds, test: { type, params, age } } – ohne opts gilt die gewählte Dauer
+  function startRecording(opts = {}) {
+    if (!connected || rec) return false;
     rec = {
       startTime: Date.now(),
       device: source.name,
-      maxSamples: settings.duration * FS,
+      maxSamples: (opts.maxSeconds || settings.duration) * FS,
       ecg: [], rr: [], rrT: [], rrElapsed: 0, lost: 0,
-      acc: [], accFs: null
+      acc: [], accFs: null,
+      test: opts.test || null,
+      events: []
     };
-    try { wakeLock = await navigator.wakeLock.request('screen'); } catch (_) { wakeLock = null; }
+    if (navigator.wakeLock) navigator.wakeLock.request('screen').then(w => { wakeLock = w; }).catch(() => {});
     timerHandle = setInterval(updateTimer, 250);
     updateTimer();
-    setStatus('Aufnahme läuft', 'recording');
+    setStatus(rec.test ? `${Tests.NAMES[rec.test.type]} läuft` : 'Aufnahme läuft', 'recording');
     updateButtons();
+    return true;
   }
 
+  const recTime = () => (rec ? rec.ecg.length / FS : 0);
+
   function updateTimer() {
-    const s = rec ? rec.ecg.length / FS : 0;
-    const left = rec ? Math.max(0, settings.duration - s) : 0;
-    $('timer').textContent = rec
-      ? `${fmtClock(s)} / −${fmtClock(left)}`
-      : '00:00';
+    const s = recTime();
+    const left = rec ? Math.max(0, rec.maxSamples / FS - s) : 0;
+    $('timer').textContent = rec ? `${fmtClock(s)} / −${fmtClock(left)}` : '00:00';
   }
 
   function fmtClock(s) {
@@ -283,7 +341,8 @@
     return `${String(Math.floor(t / 60)).padStart(2, '0')}:${String(t % 60).padStart(2, '0')}`;
   }
 
-  async function stopRecording(reason) {
+  // opts: { reason, discard }
+  async function stopRecording(opts = {}) {
     if (!rec) return;
     const r = rec;
     rec = null;
@@ -292,17 +351,23 @@
     $('timer').textContent = fmtClock(r.ecg.length / FS);
     if (connected) setStatus(`Verbunden: ${r.device}`, 'connected');
     updateButtons();
+    if (opts.discard) { setStatus(connected ? 'Test abgebrochen' : 'Nicht verbunden', connected ? 'connected' : 'idle'); return; }
 
     const duration = r.ecg.length / FS;
     if (duration < MIN_SAVE_SECONDS) {
       setStatus('Aufnahme zu kurz – nicht gespeichert', connected ? 'connected' : 'idle');
       return;
     }
+    setStatus('Speichern und auswerten …', 'busy');
     const stats = Hrv.compute(r.rr);
     const acc = Int16Array.from(r.acc);
-    const resp = Resp.analyze(acc, r.accFs);
     const ecg = Int32Array.from(r.ecg);
+    const data = {
+      fs: FS, ecg, rr: Float32Array.from(r.rr), rrT: Float32Array.from(r.rrT),
+      acc, accFs: r.accFs
+    };
     const ana = EkgAnalysis.analyze(ecg, FS);
+    const resp = Resp.analyze(acc, r.accFs);
     const meta = {
       startTime: r.startTime,
       duration,
@@ -312,13 +377,21 @@
       respRate: resp ? resp.rate : null,
       analysis: ana ? { level: ana.level, ectopic: ana.counts.S + ana.counts.V } : null,
       lost: r.lost,
-      note: reason || (r.interrupted ? 'Verbindung kurz unterbrochen' : '')
+      note: opts.reason || (r.interrupted ? 'Verbindung kurz unterbrochen' : '')
     };
-    const data = {
-      fs: FS, ecg, rr: Float32Array.from(r.rr), rrT: Float32Array.from(r.rrT),
-      acc, accFs: r.accFs
-    };
+    if (r.test) {
+      meta.test = { ...r.test, events: r.events };
+      const res = Tests.evaluate(r.test.type, { ana, events: r.events, params: r.test.params, age: r.test.age });
+      if (res) { meta.test.key = res.key || {}; meta.test.level = res.level; }
+      if (res && res.key && res.key.resonanceRate) {
+        settings.resonanceRate = res.key.resonanceRate;
+        saveSettings();
+        applyResonanceHint();
+      }
+    }
+    meta.metrics = Trends.computeMetrics({ meta, data }, { ana, resp, upright: settings.upright });
     const id = await store.save(meta, data);
+    if (connected) setStatus(`Verbunden: ${r.device}`, 'connected'); else setStatus('Nicht verbunden', 'idle');
     await renderList();
     await openRecording(id);
   }
@@ -347,6 +420,12 @@
       const dot = li.querySelector('.level-dot');
       if (m.analysis) dot.dataset.level = m.analysis.level; else dot.remove();
       li.querySelector('.rec-date').append(new Date(m.startTime).toLocaleString('de-DE'));
+      if (m.test) {
+        const tag = document.createElement('span');
+        tag.className = 'test-tag';
+        tag.textContent = Tests.NAMES[m.test.type];
+        li.querySelector('.rec-date').append(tag);
+      }
       li.querySelector('.rec-meta').textContent =
         `${EkgExport.fmtDuration(m.duration)} · ${hr}${rmssd}${af}${es}${m.note ? ' · ' + m.note : ''}`;
       li.querySelector('[data-act="open"]').onclick = () => openRecording(m.id);
@@ -364,17 +443,31 @@
   async function openRecording(id) {
     const r = await store.get(id);
     if (!r) return;
+    const { data, meta } = r;
+    const analysis = EkgAnalysis.analyze(data.ecg, data.fs);
     current = {
       ...r,
-      stats: Hrv.compute(Array.from(r.data.rr)),
-      resp: Resp.analyze(r.data.acc, r.data.accFs),
-      analysis: EkgAnalysis.analyze(r.data.ecg, r.data.fs)
+      stats: Hrv.compute(Array.from(data.rr)),
+      resp: Resp.analyze(data.acc, data.accFs),
+      analysis,
+      posture: Posture.analyze(data.acc, data.accFs, settings.upright),
+      hrvx: {
+        freq: HrvX.frequency(data.rr, data.rrT),
+        pc: HrvX.poincare(data.rr),
+        si: HrvX.stressIndex(data.rr),
+        dfa: HrvX.dfaOf(data.rr)
+      },
+      test: meta.test ? Tests.evaluate(meta.test.type, {
+        ana: analysis, events: meta.test.events || [], params: meta.test.params, age: meta.test.age
+      }) : null
     };
-    $('review').hidden = false;
-    $('reviewTitle').textContent = `Aufnahme vom ${new Date(r.meta.startTime).toLocaleString('de-DE')}`;
-    $('reviewNote').value = r.meta.note || '';
+    $('reviewTitle').textContent = `${meta.test ? Tests.NAMES[meta.test.type] : 'Aufnahme'} vom ${new Date(meta.startTime).toLocaleString('de-DE')}`;
+    $('reviewNote').value = meta.note || '';
+    showTab('aufnahmen');
+    renderTest();
     renderStats();
     renderAnalysis();
+    renderHrvx();
     showReviewData();
     $('review').scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
@@ -405,6 +498,33 @@
     }
   }
 
+  function fillFindings(ul, findings) {
+    ul.innerHTML = '';
+    for (const f of findings) {
+      const li = document.createElement('li');
+      li.dataset.level = f.level;
+      li.textContent = f.text;
+      ul.appendChild(li);
+    }
+  }
+
+  function renderTest() {
+    const t = current.test;
+    $('testBox').hidden = !t;
+    if (!t) return;
+    $('testDot').dataset.level = t.level || 'info';
+    $('testHeadline').textContent = `Ergebnis: ${t.name}`;
+    fillFindings($('testFindings'), t.findings || []);
+    fillDl($('testRows'), t.rows || []);
+    const ch = t.chart;
+    $('testChartLabel').hidden = !ch;
+    $('testChart').parentElement.hidden = !ch;
+    if (ch) {
+      const pts = ch.beats.filter(b => b.ok).map(b => ({ t: b.t, hr: b.hr }));
+      testChart.setData(pts, ch.marks || [], [0, current.meta.duration]);
+    }
+  }
+
   const QUALITY_NAMES = { flat: 'kein Signal', motion: 'Bewegung', noise: 'Störung' };
 
   function renderAnalysis() {
@@ -413,15 +533,8 @@
     $('anaDot').dataset.level = a ? a.level : 'info';
     $('anaHeadline').textContent = a ? `Automatische Auswertung: ${a.headline}` : 'Automatische Auswertung: Aufnahme zu kurz';
     box.querySelector('.analysis-grid').hidden = !a;
-    const ul = $('anaFindings');
-    ul.innerHTML = '';
+    fillFindings($('anaFindings'), a ? a.findings : []);
     if (!a) return;
-    for (const f of a.findings) {
-      const li = document.createElement('li');
-      li.dataset.level = f.level;
-      li.textContent = f.text;
-      ul.appendChild(li);
-    }
 
     const t = a.times;
     const ms = v => (v == null ? '–' : `${Math.round(v)} ms`);
@@ -455,8 +568,39 @@
     if (events.length > MAX) wrap.append(` … und ${events.length - MAX} weitere`);
   }
 
+  function renderHrvx() {
+    const { freq, pc, si, dfa } = current.hrvx;
+    const zone = HrvX.dfaZone(dfa.a1);
+    fillDl($('hrvxRows'), [
+      ['LF', freq && freq.lfReliable ? `${Math.round(freq.lf)} ms²` : '–'],
+      ['HF', freq ? `${Math.round(freq.hf)} ms²` : '–'],
+      ['LF/HF', freq && freq.lfReliable ? de(freq.lfhf, 2) : '–'],
+      ['LF n.u. / HF n.u.', freq && freq.lfReliable ? `${de(freq.lfnu)} / ${de(freq.hfnu)}` : '–'],
+      ['VLF', freq && freq.vlf != null ? `${Math.round(freq.vlf)} ms²` : '–'],
+      ['HF-Gipfel', freq && freq.hfPeak ? `${de(freq.hfPeak, 2)} Hz` : '–'],
+      ['SD1 / SD2', pc ? `${de(pc.sd1)} / ${de(pc.sd2)} ms` : '–'],
+      ['Stress-Index (√SI)', de(si, 1)],
+      ['DFA α1', dfa.a1 != null ? de(dfa.a1, 2) : '–'],
+      ['DFA α2', dfa.a2 != null ? de(dfa.a2, 2) : '–']
+    ]);
+    psdChart.setData(freq);
+    poincareChart.setData(pc);
+
+    const notes = [];
+    if (!freq) notes.push({ level: 'info', text: 'Frequenzanalyse ab 1 Minute sauberer Daten; LF und LF/HF erst ab 2 Minuten, VLF ab 4 Minuten.' });
+    else if (!freq.lfReliable) notes.push({ level: 'info', text: 'Aufnahme unter 2 Minuten – LF und LF/HF sind noch nicht aussagekräftig.' });
+    if (freq && current.resp && current.resp.rate && current.resp.rate < 9) {
+      notes.push({ level: 'info', text: `Langsame Atmung (${de(current.resp.rate, 1)} /min): Die atemabhängige Schwankung liegt dann im LF-Band – LF/HF ist nicht als „Stress“ zu deuten.` });
+    }
+    if (dfa.a1 != null) {
+      notes.push({ level: 'ok', text: `DFA α1 ${de(dfa.a1, 2)} – bei Belastung: ${zone.text}. In Ruhe sind Werte um 1 normal; die Schwellen (0,75 / 0,5) gelten nur bei Ausdauerbelastung.` });
+    }
+    if (si != null) notes.push({ level: si > 15 ? 'info' : 'ok', text: `Stress-Index ${de(si, 1)} – in Ruhe typisch etwa 7–12; höhere Werte sprechen für mehr Sympathikus-Aktivität (Anspannung, Belastung, Müdigkeit).` });
+    fillFindings($('hrvxNotes'), notes);
+  }
+
   function renderStats() {
-    const { meta, stats, resp } = current;
+    const { meta, stats, resp, posture: post } = current;
     const f = (v, d = 0) => (v == null ? '–' : v.toFixed(d).replace('.', ','));
     const rows = [
       ['Dauer', EkgExport.fmtDuration(meta.duration)],
@@ -468,18 +612,12 @@
       ['Schläge / Artefakte', stats ? `${stats.beats} / ${stats.artifacts}` : '–'],
       ['Atemfrequenz', resp && resp.rate ? `${f(resp.rate, 1)} /min` : '–'],
       ['Atemzüge', resp ? String(resp.breaths) : '–'],
+      ['Lage', post ? `${post.main} (${f(post.postures[post.main])} %)` : '–'],
+      ['Bewegung', post ? `${f(post.motion)} % der Zeit` : '–'],
       ['Gerät', meta.device]
     ];
     if (meta.lost) rows.push(['Verlorene Werte', String(meta.lost)]);
-    const dl = $('reviewStats');
-    dl.innerHTML = '';
-    for (const [k, v] of rows) {
-      const div = document.createElement('div');
-      const dt = document.createElement('dt'); dt.textContent = k;
-      const dd = document.createElement('dd'); dd.textContent = v;
-      div.append(dt, dd);
-      dl.appendChild(div);
-    }
+    fillDl($('reviewStats'), rows);
   }
 
   function closeReview() {
@@ -497,6 +635,33 @@
     $('calibBar').style.width = (50 * settings.pxPerMm) + 'px';
   }
 
+  function applyPostureState() {
+    $('postureCalibState').textContent = settings.upright
+      ? `kalibriert am ${new Date(settings.uprightDate).toLocaleDateString('de-DE')}`
+      : 'nicht kalibriert';
+  }
+
+  function applyResonanceHint() {
+    if (!settings.resonanceRate) return;
+    $('selBfRate').value = String(settings.resonanceRate);
+    $('bfResonanceHint').textContent = `Deine gemessene Resonanzfrequenz: ${Tests.fmtRate(settings.resonanceRate)} /min`;
+  }
+
+  /* ---------- Tests ---------- */
+  const runner = new TestRunner({
+    isConnected: () => connected,
+    source: () => source,
+    startRecording,
+    stopRecording,
+    recTime,
+    addEvent: ev => { if (rec) rec.events.push({ id: ev.id, value: ev.value, t: ev.t != null ? ev.t : recTime() }); },
+    gravity: () => (posture ? posture.gravity : null),
+    postureState: () => (posture ? posture.state(settings.upright) : null),
+    liveBeats: () => liveBeats
+  });
+
+  let trendView = null;
+
   function bindControls() {
     $('selSpeed').value = settings.speed;
     $('selGain').value = settings.gain;
@@ -505,12 +670,20 @@
     $('rngScale').value = settings.pxPerMm;
     $('selCsv').value = settings.csv;
     $('selDuration').value = settings.duration;
+    if (settings.age) $('inpAge').value = settings.age;
+    $('selBfMin').value = String(settings.bfMinutes);
+    applyResonanceHint();
+    applyPostureState();
+
+    document.querySelectorAll('.tabs [data-tab]').forEach(b => { b.onclick = () => showTab(b.dataset.tab); });
 
     $('selSpeed').onchange = e => { settings.speed = +e.target.value; saveSettings(); applyView(); };
     $('selGain').onchange = e => { settings.gain = +e.target.value; saveSettings(); applyView(); };
     $('rngScale').oninput = e => { settings.pxPerMm = +e.target.value; saveSettings(); applyView(); };
     $('selCsv').onchange = e => { settings.csv = e.target.value; saveSettings(); };
     $('selDuration').onchange = e => { settings.duration = +e.target.value; saveSettings(); };
+    $('inpAge').onchange = e => { settings.age = +e.target.value || null; saveSettings(); };
+    $('selBfMin').onchange = e => { settings.bfMinutes = +e.target.value; saveSettings(); };
     const onFilter = () => {
       settings.highpass = $('chkHp').checked;
       settings.notch = $('chkNotch').checked;
@@ -526,13 +699,46 @@
     $('chkHp').onchange = onFilter;
     $('chkNotch').onchange = onFilter;
 
+    $('btnCalibPosture').onclick = () => {
+      const g = posture && posture.gravity;
+      if (!g) return;
+      settings.upright = g;
+      settings.uprightDate = Date.now();
+      saveSettings();
+      applyPostureState();
+    };
+    $('btnResetPosture').onclick = () => {
+      settings.upright = null;
+      settings.uprightDate = null;
+      saveSettings();
+      applyPostureState();
+    };
+
     $('btnConnect').onclick = () => connect(PolarH10Source);
     $('btnDemo').onclick = () => connect(DemoSource);
     $('btnDisconnect').onclick = async () => {
+      runner.abort();
       if (rec) await stopRecording();
       if (source) await source.disconnect();
     };
     $('btnRecord').onclick = () => (rec ? stopRecording() : startRecording());
+
+    document.querySelectorAll('[data-test]').forEach(b => {
+      b.onclick = () => {
+        const type = b.dataset.test;
+        const opts = {};
+        if (type === 'deepBreathing') {
+          settings.age = +$('inpAge').value || null;
+          saveSettings();
+          opts.age = settings.age;
+        }
+        if (type === 'biofeedback') {
+          opts.rate = +$('selBfRate').value;
+          opts.minutes = +$('selBfMin').value;
+        }
+        runner.start(type, opts);
+      };
+    });
 
     $('btnCloseReview').onclick = closeReview;
     $('reviewNote').onchange = async e => {
@@ -551,7 +757,7 @@
       btn.disabled = true;
       btn.textContent = 'PDF wird erstellt …';
       try {
-        await EkgExport.pdfReport(current, current.stats, viewOpts(), current.resp, current.analysis);
+        await EkgExport.pdfReport(current, viewOpts());
       } catch (err) {
         console.error(err);
         alert('PDF konnte nicht erstellt werden: ' + (err.message || err));
@@ -575,9 +781,11 @@
     const opened = await EkgStorage.openStorage();
     store = opened.store;
     $('storageNotice').hidden = opened.persistent;
+    trendView = new Trends.TrendView({ store, onOpen: openRecording, getUpright: () => settings.upright });
     bindControls();
     applyView();
     updateButtons();
+    showTab('messen');
     await renderList();
   }
 

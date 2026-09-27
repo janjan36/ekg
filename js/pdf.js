@@ -25,6 +25,10 @@
   // WinAnsi-Kodierung: Latin-1 direkt, dazu einige Sonderzeichen aus dem Bereich 0x80–0x9F
   const WIN_ANSI = { '€': 0x80, '…': 0x85, '•': 0x95, '–': 0x96, '—': 0x97, '‘': 0x91, '’': 0x92, '“': 0x93, '”': 0x94 };
 
+  // Zeichen, die Helvetica/WinAnsi nicht kennt, lesbar ersetzen
+  const SUBST = { '≥': '>=', '≤': '<=', 'α': 'a', 'Δ': 'd', '✓': '', '→': '->', '−': '-', '≈': '~' };
+  const normalize = str => Array.from(String(str), ch => (ch in SUBST ? SUBST[ch] : ch)).join('');
+
   function charCode(ch) {
     if (WIN_ANSI[ch]) return WIN_ANSI[ch];
     const c = ch.charCodeAt(0);
@@ -33,7 +37,7 @@
 
   function textWidth(str, size, bold) {
     let w = 0;
-    for (const ch of str) {
+    for (const ch of normalize(str)) {
       const c = ch.charCodeAt(0);
       w += c >= 32 && c <= 126 ? (bold ? W_BOLD : W_REG)[c - 32] : (W_EXTRA[ch] || 556);
     }
@@ -111,6 +115,7 @@
 
     // y = Grundlinie der Schrift; align: left | center | right. Gibt die Textbreite in mm zurück.
     text(x, y, str, { size = 9, bold = false, color = '#000000', align = 'left' } = {}) {
+      str = normalize(str);
       const w = textWidth(str, size, bold);
       const x0 = align === 'center' ? x - w / 2 : align === 'right' ? x - w : x;
       this.ops.push(`BT /${bold ? 'F2' : 'F1'} ${num(size)} Tf ${rgb(color)} rg ${this.X(x0)} ${this.Y(y)} Td ${pdfString(str)} Tj ET`);

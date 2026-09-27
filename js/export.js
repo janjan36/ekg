@@ -193,8 +193,39 @@
   const f0 = v => (v == null ? '–' : v.toFixed(0));
   const ms = v => (v == null ? '–' : `${Math.round(v)} ms`);
 
-  async function pdfReport(rec, stats, view, resp, ana) {
-    const { meta, data } = rec;
+  // Befundblock: Überschrift mit Punkt, Befunde mit Punkten, optional Wertezeilen; gibt neues y zurück
+  function drawFindings(page, x, y, width, headline, level, findings, rows) {
+    page.fill(C.level[level || 'info']); page.circle(x + 1.2, y - 1.3, 1.2);
+    page.text(x + 4, y, headline, { size: 11, bold: true });
+    y += 5.5;
+    for (const f of findings) {
+      for (const [k, line] of global.Pdf.wrap(f.text, width - 4, 9, false).entries()) {
+        if (!k) { page.fill(C.level[f.level]); page.circle(x + 1, y - 1.1, 1); }
+        page.text(x + 4, y, line, { size: 9 });
+        y += 4.2;
+      }
+    }
+    if (rows && rows.length) {
+      y += 0.5;
+      const runs = [];
+      rows.forEach(([k, v], i) => runs.push([`${k} `, true], [`${v}${i < rows.length - 1 ? '   ' : ''}`, false]));
+      // Wertezeilen umbrechen, falls zu lang
+      let line = [], w = 0;
+      const flush = () => { if (line.length) { page.runs(x, y, line, { size: 8.5 }); y += 4; line = []; w = 0; } };
+      for (let i = 0; i < runs.length; i += 2) {
+        const pw = global.Pdf.textWidth(runs[i][0], 8.5, true) + global.Pdf.textWidth(runs[i + 1][0], 8.5, false);
+        if (w + pw > width) flush();
+        line.push(runs[i], runs[i + 1]);
+        w += pw;
+      }
+      flush();
+    }
+    return y;
+  }
+
+  // cur: geöffnete Aufnahme aus app.js ({ meta, data, stats, resp, analysis, hrvx, posture, test })
+  async function pdfReport(cur, view) {
+    const { meta, data, stats, resp, analysis: ana, hrvx, posture: post, test } = cur;
     const fs = data.fs;
     const values = global.EkgFilters.filtfilt(data.ecg, fs, view);
     const doc = new global.Pdf.PdfDoc(PAGE_W, PAGE_H);
@@ -202,7 +233,8 @@
     const right = PAGE_W - MARGIN;
     let y = MARGIN + 5;
 
-    page.text(MARGIN, y, `EKG-Aufzeichnung – ${meta.device}`, { size: 14, bold: true });
+    const title = test ? `${test.name} – ${meta.device}` : `EKG-Aufzeichnung – ${meta.device}`;
+    page.text(MARGIN, y, title, { size: 14, bold: true });
     y += 6;
     const filters = [view.highpass && 'Grundlinie 0,5 Hz', view.notch && '50 Hz'].filter(Boolean).join(', ') || 'keine';
     page.text(MARGIN, y, `${new Date(meta.startTime).toLocaleString('de-DE')} · Dauer ${fmtDuration(meta.duration)} · ` +
@@ -218,7 +250,28 @@
     ] : [['Keine RR-Daten    ', false]];
     if (resp && resp.rate) runs.push(['Atemfrequenz ', true], [`${resp.rate.toFixed(1).replace('.', ',')} /min`, false]);
     page.runs(MARGIN, y, runs, { size: 9 });
-    y += 7;
+    y += 4.5;
+
+    // Erweiterte HRV und Lage in einer Zeile
+    if (hrvx) {
+      const { freq, pc, si, dfa } = hrvx;
+      const d2 = v => (v == null ? '–' : v.toFixed(2).replace('.', ','));
+      const x = [];
+      if (freq && freq.lfReliable) x.push(['LF ', true], [`${Math.round(freq.lf)} ms²    `, false], ['HF ', true], [`${Math.round(freq.hf)} ms²    `, false], ['LF/HF ', true], [`${d2(freq.lfhf)}    `, false]);
+      else if (freq) x.push(['HF ', true], [`${Math.round(freq.hf)} ms²    `, false]);
+      if (pc) x.push(['SD1/SD2 ', true], [`${f0(pc.sd1)}/${f0(pc.sd2)} ms    `, false]);
+      if (si != null) x.push(['Stress-Index ', true], [`${si.toFixed(1).replace('.', ',')}    `, false]);
+      if (dfa && dfa.a1 != null) x.push(['DFA α1 ', true], [`${d2(dfa.a1)}    `, false]);
+      if (post) x.push(['Lage ', true], [`${post.main} · Bewegung ${f0(post.motion)} %`, false]);
+      if (x.length) { page.runs(MARGIN, y, x, { size: 9 }); y += 4.5; }
+    }
+    y += 2.5;
+
+    // Ergebnis eines geführten Tests
+    if (test) {
+      y = drawFindings(page, MARGIN, y, right - MARGIN, `Ergebnis: ${test.name}`, test.level, test.findings || [], test.rows || []);
+      y += 3;
+    }
 
     // Automatische Auswertung: Text links, Durchschnittsschlag rechts
     if (ana) {
@@ -226,16 +279,7 @@
       let beatBox = { width: 0, height: 0 };
       if (ana.times) beatBox = drawBeat(page, right - Math.ceil(ana.times.y.length / fs * 50), top, ana.times, fs, ana.avgCount);
       const textW = right - MARGIN - (beatBox.width ? beatBox.width + 8 : 0);
-      page.fill(C.level[ana.level]); page.circle(MARGIN + 1.2, y - 1.3, 1.2);
-      page.text(MARGIN + 4, y, `Automatische Auswertung: ${ana.headline}`, { size: 11, bold: true });
-      y += 5.5;
-      for (const f of ana.findings) {
-        for (const [k, line] of global.Pdf.wrap(f.text, textW - 4, 9, false).entries()) {
-          if (!k) { page.fill(C.level[f.level]); page.circle(MARGIN + 1, y - 1.1, 1); }
-          page.text(MARGIN + 4, y, line, { size: 9 });
-          y += 4.2;
-        }
-      }
+      y = drawFindings(page, MARGIN, y, textW, `Automatische Auswertung: ${ana.headline}`, ana.level, ana.findings, null);
       y += 1;
       const t = ana.times;
       page.runs(MARGIN, y, [

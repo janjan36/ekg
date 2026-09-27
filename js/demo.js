@@ -31,6 +31,16 @@
     return Math.sqrt(-2 * Math.log(Math.random() || 1e-9)) * Math.cos(2 * Math.PI * Math.random());
   }
 
+  // Herzfrequenz-Antwort auf das Aufstehen (s nach dem Aufstehen → zusätzliche Schläge/min):
+  // Anstieg bis ~10 s (um den 15. Schlag), Rückgang bis ~22 s (um den 30. Schlag), dann Plateau
+  function standResponse(dt) {
+    if (dt < 0) return 0;
+    if (dt < 10) return 25 * dt / 10;
+    if (dt < 22) return 25 - 19 * (dt - 10) / 12;
+    if (dt < 40) return 6 + 6 * (dt - 22) / 18;
+    return 12;
+  }
+
   class DemoSource {
     constructor(handlers) {
       this.h = handlers;
@@ -39,8 +49,27 @@
       this._timers = [];
     }
 
+    /* ---------- Szenarien für die geführten Tests ---------- */
+    // Atmung umstellen (Periode in s, Tiefe: Faktor für die Atemschwankung der Herzfrequenz)
+    setBreathing(periodS, depth = 1) {
+      const now = this.t || 0;
+      this._breath = { t0: now, phase0: this._breathPhase(now), period: periodS, depth };
+    }
+
+    standUp() { this._standAt = this.t; }
+    lieDown() { this._standAt = null; }
+
+    _breathPhase(t) {
+      const b = this._breath;
+      return b.phase0 + 2 * Math.PI * (t - b.t0) / b.period;
+    }
+
+    _hrNow(t) { return BASE_HR + (this._standAt != null ? standResponse(t - this._standAt) : 0); }
+
     async connect() {
       this.h.onStatus('Demo startet …');
+      this._breath = { t0: 0, phase0: 0, period: BREATH_PERIOD, depth: 1 };
+      this._standAt = null;
       this.t = 0;               // Zeit des nächsten Samples (s)
       this.beats = [];          // R-Zacken { t (s), kind: N|S|V }
       this.pendingRR = [];      // seit letzter HF-Meldung vollendete RR-Intervalle
@@ -60,13 +89,18 @@
     }
 
     // Brustkorbbewegung: Atmung im gleichen Takt wie die Sinusarrhythmie, dazu etwas Rauschen.
+    // Liegend wirkt die Schwerkraft auf Z, stehend auf X; beim Aufstehen 2 s Übergang mit Bewegung.
     _emitAcc() {
       const xyz = new Int32Array(ACC_FRAME * 3);
       for (let i = 0; i < ACC_FRAME; i++) {
-        const b = Math.sin(2 * Math.PI * this.accT / BREATH_PERIOD);
-        xyz[i * 3] = Math.round(60 + 9 * b + 2 * gaussNoise());
-        xyz[i * 3 + 1] = Math.round(-140 + 4 * b + 2 * gaussNoise());
-        xyz[i * 3 + 2] = Math.round(985 - 22 * b + 2 * gaussNoise());
+        const t = this.accT;
+        const b = Math.sin(this._breathPhase(t)) * Math.min(2, this._breath.depth);
+        const s = this._standAt == null ? 0 : Math.max(0, Math.min(1, (t - this._standAt) / 2));
+        const moving = this._standAt != null && t - this._standAt < 2.5 ? 60 : 2;
+        const gx = 60 * (1 - s) - 985 * s, gz = 985 * (1 - s) + 80 * s;
+        xyz[i * 3] = Math.round(gx + 9 * b + moving * gaussNoise());
+        xyz[i * 3 + 1] = Math.round(-140 + 4 * b + moving * gaussNoise());
+        xyz[i * 3 + 2] = Math.round(gz - 22 * b + moving * gaussNoise());
         this.accT += 1 / ACC_FS;
       }
       this.h.onAcc(xyz, { fs: ACC_FS });
@@ -85,8 +119,10 @@
         const last = this.beats.length ? this.beats[this.beats.length - 1] : null;
         this.beats.push({ t: this._nextBeat, kind: this._nextKind });
         if (last !== null) this.pendingRR.push({ at: this._nextBeat, rr: (this._nextBeat - last.t) * 1000 });
-        // Respiratorische Sinusarrhythmie + etwas Zufall
-        const base = 60 / BASE_HR * (1 + 0.06 * Math.sin(2 * Math.PI * this._nextBeat / BREATH_PERIOD)) + 0.015 * gaussNoise();
+        // Respiratorische Sinusarrhythmie (bei langsamer, tiefer Atmung stärker) + etwas Zufall
+        const tb = this._nextBeat;
+        const rsa = 0.06 * this._breath.depth * Math.min(2, this._breath.period / BREATH_PERIOD);
+        const base = 60 / this._hrNow(tb) * (1 + rsa * Math.sin(this._breathPhase(tb))) + 0.015 * gaussNoise();
         let rr = base, kind = 'N';
         this._beatNo++;
         if (this._beatNo % VES_EVERY === 0) {

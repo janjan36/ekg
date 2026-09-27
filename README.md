@@ -40,6 +40,22 @@ Ohne Gurt ausprobieren: **„Demo“**.
   - *EKG-Zeiten*: PQ, QRS, QT, QTc (Bazett und Fridericia) am Durchschnittsschlag, mit Bild und Messlinien
   - Alles sind Näherungen aus einer Ableitung mit 130 Hz – **keine Diagnose**. Auffälligkeiten ärztlich abklären lassen.
   - Der Demo-Gurt enthält absichtlich gelegentliche Extraschläge und alle 45 s eine kurze Störung, um die Auswertung zu zeigen.
+- **Erweiterte HRV** (je Aufnahme und im PDF): Frequenzspektrum mit LF, HF, LF/HF, VLF (ab 4 min),
+  Poincaré-Plot (SD1/SD2), Stress-Index nach Baevsky (√SI, wie Kubios), DFA α1/α2.
+  LF und LF/HF erst ab 2 min aussagekräftig. Bei langsamer Atmung (< 9/min) liegt die Atemschwankung im LF-Band.
+- **DFA α1 live** (letzte 2 min) fürs Training: > 0,75 unter der aeroben Schwelle, 0,75–0,5 dazwischen,
+  < 0,5 über der anaeroben Schwelle (gilt nur bei Ausdauerbelastung).
+- **Körperlage und Bewegung** aus dem Beschleunigungssensor (liegend / geneigt / aufrecht, ruhig / Bewegung).
+  Mit **Einstellungen → Lage kalibrieren** (im Stehen) werden auch Seitenlage und Zurücklehnen erkannt.
+- **Geführte Tests** (Reiter „Tests“, werden als Aufnahme gespeichert und ausgewertet):
+  - *Orthostase-Test*: 2 min liegen, 3 min stehen – 30:15-Verhältnis (≥ 1,04 normal), HF-Anstieg.
+    Das Aufstehen wird über den Lagesensor erkannt.
+  - *Tiefe Atmung*: 1 min mit 6 Atemzügen/min – HF-Schwankung (≥ 15/min normal) und E/I-Verhältnis
+    mit Altersrichtwert.
+  - *HRV-Biofeedback*: Atemkreis mit wählbarem Takt, Kohärenz live (Anteil der Schwankung im Atemrhythmus).
+  - *Resonanzfrequenz finden*: 5 × 2 min mit 6,5 … 4,5 Atemzügen/min; der beste Takt wird fürs Biofeedback vorgewählt.
+- **Verlauf** (Reiter „Verlauf“): Herzfrequenz, RMSSD, Atemfrequenz, QTc, LF/HF, Stress-Index und Testwerte über alle
+  Aufnahmen, mit persönlichem Normalbereich (Mittelwert ± 1 SD ab 5 Aufnahmen); auch als Tabelle.
 - **Aufnahmen** (30 s bis 10 min) werden im Browser gespeichert; Detailansicht mit Scrollen und HF-Verlauf
 - **HRV** der Aufnahme: Ø/Min/Max-HF, SDNN, RMSSD, pNN50, Artefaktzahl
   (RR-Intervalle außerhalb 300–2000 ms oder > 20 % Abweichung vom lokalen Median gelten als Artefakt)
@@ -90,6 +106,11 @@ Tipps:
 | `js/hrv.js` | Artefakterkennung und HRV-Werte |
 | `js/resp.js` | Atemfrequenz aus dem Beschleunigungssensor |
 | `js/analysis.js` | Automatische Auswertung (R-Zacken, Signalqualität, Schlagtypen, Rhythmus, EKG-Zeiten) |
+| `js/hrvx.js` | Erweiterte HRV: Spektrum, Poincaré, Stress-Index, DFA, Kohärenz |
+| `js/posture.js` | Körperlage und Bewegung, Erkennung des Aufstehens |
+| `js/tests.js`, `js/testRunner.js` | Geführte Tests: Abläufe, Atemtakt, Auswertung mit Normwerten |
+| `js/charts2.js` | Spektrum, Poincaré, HF-Verlauf, Verlaufskurven |
+| `js/trends.js` | Kennwerte je Aufnahme und Verlaufsansicht |
 | `js/storage.js` | Speicherung im Browser (IndexedDB) |
 | `js/export.js` | CSV/TXT-Export und PDF-Bericht, Teilen-Menü auf iOS |
 | `js/pdf.js` | Kleiner PDF-Erzeuger (Vektorgrafik, Helvetica) |

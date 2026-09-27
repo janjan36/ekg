@@ -16,9 +16,17 @@
       <h1>EKG <span class="muted">· Polar H10</span></h1>
       <div class="status">
         <span class="pill" id="statusPill" data-state="idle">Nicht verbunden</span>
+        <span class="battery" id="contact" hidden></span>
         <span class="battery" id="battery" hidden></span>
       </div>
     </header>
+
+    <nav class="tabs" role="tablist">
+      <button role="tab" data-tab="messen" aria-selected="true">Messen</button>
+      <button role="tab" data-tab="tests">Tests</button>
+      <button role="tab" data-tab="aufnahmen">Aufnahmen</button>
+      <button role="tab" data-tab="verlauf">Verlauf</button>
+    </nav>
 
     <p class="notice" id="bleNotice" hidden>
       Dieser Browser unterstützt kein Web Bluetooth. Bitte <strong>Google Chrome</strong> oder
@@ -44,7 +52,7 @@
         <button class="btn" id="btnDemo">Demo</button>
         <button class="btn" id="btnDisconnect" hidden>Trennen</button>
       </div>
-      <div class="row">
+      <div class="row" data-panel="messen">
         <button class="btn record" id="btnRecord" disabled>
           <span class="dot"></span><span id="btnRecordLabel">Aufnahme starten</span>
         </button>
@@ -62,13 +70,15 @@
       </div>
     </section>
 
-    <section class="card">
+    <!-- ===================== Messen ===================== -->
+    <section class="card" data-panel="messen">
       <div class="tiles">
         <div class="tile"><span class="label">Herzfrequenz</span><span class="value" id="valHr">–</span><span class="unit">/min</span></div>
-        <div class="tile"><span class="label">RR-Intervall</span><span class="value" id="valRr">–</span><span class="unit">ms</span></div>
+        <div class="tile"><span class="label">RR-Intervall</span><span class="value" id="valRr">–</span><span class="unit" id="valSignal">ms</span></div>
         <div class="tile"><span class="label">RMSSD (60 s)</span><span class="value" id="valRmssd">–</span><span class="unit">ms</span></div>
         <div class="tile"><span class="label">Atemfrequenz</span><span class="value" id="valResp">–</span><span class="unit" id="valRespUnit">/min</span></div>
-        <div class="tile"><span class="label">Hautkontakt</span><span class="value small" id="valContact">–</span><span class="unit" id="valSignal"></span></div>
+        <div class="tile"><span class="label">DFA α1 (2 min)</span><span class="value" id="valDfa">–</span><span class="unit" id="valDfaZone">&nbsp;</span></div>
+        <div class="tile"><span class="label">Lage</span><span class="value small" id="valPosture">–</span><span class="unit" id="valMotion">&nbsp;</span></div>
       </div>
 
       <div class="chart-head">
@@ -104,11 +114,98 @@
       </div>
     </section>
 
-    <section class="card review" id="review" hidden>
+    <!-- ===================== Tests ===================== -->
+    <section class="card" data-panel="tests" hidden>
+      <div id="testMenu">
+        <h2>Geführte Messungen</h2>
+        <p class="hint">Zuerst den Gurt verbinden (oder „Demo“). Jeder Test wird automatisch als Aufnahme gespeichert
+          und danach ausgewertet.</p>
+        <div class="test-grid">
+          <article class="test-card">
+            <h3>Orthostase-Test</h3>
+            <p>2 min ruhig liegen, auf Signal zügig aufstehen, 3 min ruhig stehen. Zeigt, wie das vegetative
+              Nervensystem die Herzfrequenz anpasst (30:15-Verhältnis, Anstieg im Stehen).</p>
+            <p class="meta">Dauer 5 min · im Liegen starten</p>
+            <button class="btn primary" data-test="orthostatic">Starten</button>
+          </article>
+          <article class="test-card">
+            <h3>Tiefe Atmung (E/I)</h3>
+            <p>30 s Ruhe, dann 1 min tief atmen im Takt 5 s ein / 5 s aus. Misst die atemabhängige Schwankung der
+              Herzfrequenz (Vagusfunktion).</p>
+            <label class="field">Alter <input type="number" id="inpAge" min="10" max="100" inputmode="numeric" placeholder="Jahre"></label>
+            <p class="meta">Dauer 1,5 min · sitzend</p>
+            <button class="btn primary" data-test="deepBreathing">Starten</button>
+          </article>
+          <article class="test-card">
+            <h3>HRV-Biofeedback</h3>
+            <p>Atmen im Takt eines Kreises. Die Kohärenz zeigt live, wie gleichmäßig Herz und Atmung zusammenschwingen.</p>
+            <div class="row">
+              <label class="field">Takt
+                <select id="selBfRate">
+                  <option value="7">7 /min</option><option value="6.5">6,5 /min</option>
+                  <option value="6" selected>6 /min</option><option value="5.5">5,5 /min</option>
+                  <option value="5">5 /min</option><option value="4.5">4,5 /min</option>
+                </select>
+              </label>
+              <label class="field">Dauer
+                <select id="selBfMin">
+                  <option value="3">3 min</option><option value="5" selected>5 min</option><option value="10">10 min</option>
+                </select>
+              </label>
+            </div>
+            <p class="meta" id="bfResonanceHint">&nbsp;</p>
+            <button class="btn primary" data-test="biofeedback">Starten</button>
+          </article>
+          <article class="test-card">
+            <h3>Resonanzfrequenz finden</h3>
+            <p>Je 2 min atmen mit 6,5 – 6 – 5,5 – 5 – 4,5 Atemzügen/min. Der Takt mit der größten
+              Herzfrequenz-Schwankung ist deine persönliche Resonanzfrequenz fürs Biofeedback.</p>
+            <p class="meta">Dauer 10 min · sitzend</p>
+            <button class="btn primary" data-test="resonance">Starten</button>
+          </article>
+        </div>
+      </div>
+
+      <div id="testRun" hidden>
+        <div class="run-head">
+          <h2 id="runName">Test</h2>
+          <button class="btn ghost" id="btnTestCancel">Abbrechen</button>
+        </div>
+        <div class="run-phase">
+          <div class="run-title" id="runTitle"></div>
+          <div id="runText"></div>
+        </div>
+        <div class="progress"><div id="runProgress"></div></div>
+        <div class="run-time" id="runTime"></div>
+        <div class="pacer-wrap" id="pacerWrap" hidden>
+          <div class="pacer" id="pacer"></div>
+          <div class="pacer-text" id="pacerText">Einatmen</div>
+        </div>
+        <div class="tiles run-values">
+          <div class="tile"><span class="label">Herzfrequenz</span><span class="value" id="runHr">–</span><span class="unit">/min</span></div>
+          <div class="tile" id="runCohTile"><span class="label">Kohärenz</span><span class="value" id="runCoh">–</span><span class="unit" id="runCohLevel">%</span></div>
+          <div class="tile"><span class="label">Lage</span><span class="value small" id="runPosture">–</span><span class="unit" id="runMotion">&nbsp;</span></div>
+        </div>
+        <div class="sub-label">Herzfrequenz (letzte 90 s)</div>
+        <div class="run-chart"><canvas id="runChart"></canvas></div>
+      </div>
+    </section>
+
+    <!-- ===================== Aufnahmen ===================== -->
+    <section class="card review" id="review" data-panel="aufnahmen" hidden>
       <div class="review-head">
         <h2 id="reviewTitle">Aufnahme</h2>
         <button class="btn ghost" id="btnCloseReview" aria-label="Schließen">Schließen</button>
       </div>
+
+      <div class="analysis test-result" id="testBox" hidden>
+        <div class="analysis-head"><span class="level-dot" id="testDot"></span><h3 id="testHeadline">Test</h3></div>
+        <ul class="findings" id="testFindings"></ul>
+        <dl class="stats times" id="testRows"></dl>
+        <div class="sub-label" id="testChartLabel">Herzfrequenz im Testverlauf</div>
+        <div class="tacho test-chart"><canvas id="testChart"></canvas></div>
+      </div>
+
       <dl class="stats" id="reviewStats"></dl>
       <div class="analysis" id="analysisBox">
         <div class="analysis-head"><span class="level-dot" id="anaDot"></span><h3 id="anaHeadline">Automatische Auswertung</h3></div>
@@ -127,6 +224,24 @@
         <p class="hint">Automatische Auswertung eines Einkanal-EKGs (130 Hz). Zeiten sind Näherungswerte;
           die Auswertung ersetzt keine ärztliche Beurteilung.</p>
       </div>
+
+      <div class="analysis" id="hrvxBox">
+        <div class="analysis-head"><h3>Erweiterte HRV</h3></div>
+        <dl class="stats times" id="hrvxRows"></dl>
+        <div class="analysis-grid">
+          <div>
+            <div class="sub-label">Frequenzspektrum der Herzfrequenz-Schwankung
+              (<span class="swatch lf"></span> LF 0,04–0,15 Hz · <span class="swatch hf"></span> HF 0,15–0,4 Hz)</div>
+            <div class="chart-box"><canvas id="psdCanvas"></canvas></div>
+          </div>
+          <div>
+            <div class="sub-label">Poincaré-Plot (RR<sub>n</sub> gegen RR<sub>n+1</sub>, ms)</div>
+            <div class="chart-box square"><canvas id="poincareCanvas"></canvas></div>
+          </div>
+        </div>
+        <ul class="findings" id="hrvxNotes"></ul>
+      </div>
+
       <div class="review-scroll" id="reviewScroll">
         <div class="review-inner" id="reviewInner"><canvas id="reviewCanvas"></canvas></div>
       </div>
@@ -147,10 +262,26 @@
       </div>
     </section>
 
-    <section class="card">
+    <section class="card" data-panel="aufnahmen" hidden>
       <h2>Aufnahmen</h2>
       <ul class="rec-list" id="recList"></ul>
       <p class="muted" id="recEmpty">Noch keine Aufnahmen.</p>
+    </section>
+
+    <!-- ===================== Verlauf ===================== -->
+    <section class="card" data-panel="verlauf" hidden>
+      <div class="trend-head">
+        <h2>Verlauf</h2>
+        <div class="row">
+          <label class="check"><input type="checkbox" id="chkRestOnly" checked> nur Ruhe-Aufnahmen</label>
+          <button class="btn small" id="btnTrendTable">Als Tabelle</button>
+        </div>
+      </div>
+      <p class="hint" id="trendHint">Jeder Punkt ist eine Aufnahme – Tippen/Klicken öffnet sie. Das graue Band zeigt deinen
+        persönlichen Normalbereich (Mittelwert ± 1 Standardabweichung), sobald mindestens 5 Aufnahmen vorliegen.</p>
+      <div class="trend-grid" id="trendCharts"></div>
+      <div class="trend-table" id="trendTable" hidden></div>
+      <p class="muted" id="trendEmpty" hidden>Noch keine passenden Aufnahmen.</p>
     </section>
 
     <details class="card settings">
@@ -162,6 +293,15 @@
         <div class="calib-bar" id="calibBar"><span>5 cm</span></div>
         <p class="hint">Mit einem Lineal nachmessen und den Regler so einstellen, dass der Balken genau 5 cm lang ist –
           dann entsprechen die Kästchen echten Millimetern. Größer stellen vergrößert einfach die Darstellung.</p>
+      </div>
+      <div class="setting">
+        <div class="row">
+          <button class="btn" id="btnCalibPosture" disabled>Lage kalibrieren</button>
+          <button class="btn ghost" id="btnResetPosture">Zurücksetzen</button>
+          <span class="muted" id="postureCalibState"></span>
+        </div>
+        <p class="hint">Gurt angelegt und verbunden, aufrecht stehen und „Lage kalibrieren“ tippen. Danach erkennt die App
+          auch Seitenlage und Zurücklehnen. Ohne Kalibrierung gilt: Schwerkraft senkrecht zur Brust = liegend.</p>
       </div>
       <div class="setting">
         <label class="field">CSV-Format
@@ -180,14 +320,20 @@
 
   <script src="js/filters.js"></script>
   <script src="js/hrv.js"></script>
+  <script src="js/hrvx.js"></script>
   <script src="js/resp.js"></script>
+  <script src="js/posture.js"></script>
   <script src="js/analysis.js"></script>
+  <script src="js/tests.js"></script>
   <script src="js/polar.js"></script>
   <script src="js/demo.js"></script>
   <script src="js/ecgChart.js"></script>
+  <script src="js/charts2.js"></script>
   <script src="js/storage.js"></script>
   <script src="js/pdf.js"></script>
   <script src="js/export.js"></script>
+  <script src="js/trends.js"></script>
+  <script src="js/testRunner.js"></script>
   <script src="js/app.js"></script>
 </body>
 </html>

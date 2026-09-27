@@ -199,13 +199,43 @@
       }
       return v.length >= 3 ? median(v) : null;
     });
+    // Erwartetes RR an Stelle k aus den Nachbarn k−3…k−1 und k+2…k+3 (k und das folgende,
+    // evtl. kompensatorische Intervall ausgelassen), per Parabel angepasst. Folgt der Atemwelle.
+    const expectedRR = k => {
+      const pts = [];
+      for (const j of [k - 3, k - 2, k - 1, k + 2, k + 3]) {
+        if (j >= 1 && j < rr.length && rr[j] != null) pts.push([j - k, rr[j]]);
+      }
+      if (pts.length < 3) return refs[k];
+      const med = median(pts.map(p => p[1]));
+      const good = pts.filter(p => Math.abs(p[1] - med) < 0.2 * med);   // Ausreißer (andere Extraschläge) raus
+      if (good.length < 3) return med;
+      // Kleinste Quadrate für y = a + b·x + c·x², Wert bei x = 0 ist a
+      const S = [0, 0, 0, 0, 0], T = [0, 0, 0];
+      for (const [x, y] of good) {
+        for (let p = 0; p < 5; p++) S[p] += x ** p;
+        for (let p = 0; p < 3; p++) T[p] += y * x ** p;
+      }
+      const A = [[S[0], S[1], S[2]], [S[1], S[2], S[3]], [S[2], S[3], S[4]]];
+      const det = m => m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0]) +
+        m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+      const D = det(A);
+      if (Math.abs(D) < 1e-9) return med;
+      const a = det([[T[0], A[0][1], A[0][2]], [T[1], A[1][1], A[1][2]], [T[2], A[2][1], A[2][2]]]) / D;
+      const lo = Math.min(...good.map(p => p[1])), hi = Math.max(...good.map(p => p[1]));
+      return Math.max(0.85 * lo, Math.min(1.15 * hi, a));
+    };
+
     const SHIFT = 2;
-    const seg = (k, sh = 0) => (r[k] - A + sh - SHIFT >= 0 && r[k] + B + sh + SHIFT < n
+    const seg = (k, sh = 0) => (r[k] - A + sh >= 0 && r[k] + B + sh < n
       ? clean.subarray(r[k] - A + sh, r[k] + B + 1 + sh) : null);
     // Formvergleich mit kleiner Verschiebung: bei 130 Hz liegt die R-Spitze oft zwischen zwei Messpunkten
     const bestCorr = (k, template) => {
       let best = -1;
-      for (let sh = -SHIFT; sh <= SHIFT; sh++) best = Math.max(best, pearson(seg(k, sh), template));
+      for (let sh = -SHIFT; sh <= SHIFT; sh++) {
+        const s = seg(k, sh);
+        if (s) best = Math.max(best, pearson(s, template));
+      }
       return best;
     };
 
@@ -219,9 +249,13 @@
 
     return r.map((i, k) => {
       const corr = template && seg(k) ? bestCorr(k, template) : 1;
+      // Vorzeitig = deutlich kürzer als lokal erwartet UND abrupt kürzer als das vorige Intervall.
+      // Die atemabhängige Schwankung (auch bei tiefer Atmung) ändert sich dagegen allmählich.
+      const exp = rr[k] ? expectedRR(k) : null;
+      const premature = rr[k] && exp && rr[k] < 0.82 * exp && (rr[k - 1] == null || rr[k] < 0.9 * rr[k - 1]);
       let type = 'N';
       if (!usable[k]) type = 'U';
-      else if (rr[k] && refs[k] && rr[k] < 0.8 * refs[k]) type = corr < 0.7 ? 'V' : 'S';
+      else if (premature) type = corr < 0.7 ? 'V' : 'S';
       else if (corr < 0.5) type = 'A';
       return { i, type, rr: rr[k], corr };
     });
