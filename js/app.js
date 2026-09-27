@@ -538,13 +538,16 @@
 
     const t = a.times;
     const ms = v => (v == null ? '–' : `${Math.round(v)} ms`);
+    const mv = v => (v == null ? '–' : (v / 1000).toFixed(2).replace('.', ','));
     fillDl($('anaTimes'), [
       ['PQ (120–200)', ms(t && t.pq)],
       ['QRS (< 120)', ms(t && t.qrs)],
       ['QT', ms(t && t.qt)],
       ['QTc Bazett (< 460)', ms(t && t.qtcB)],
       ['QTc Fridericia', ms(t && t.qtcF)],
-      ['RR (Median)', ms(a.rhythm.medianRR)]
+      ['RR (Median)', ms(a.rhythm.medianRR)],
+      ['R / S-Amplitude', t ? `${mv(t.amps.r)} / ${mv(t.amps.s)} mV` : '–'],
+      ['P / T-Amplitude', t ? `${mv(t.amps.p)} / ${mv(t.amps.t)} mV` : '–']
     ]);
     $('beatLegend').textContent = t ? `Durchschnittsschlag aus ${a.avgCount} Schlägen` : 'Durchschnittsschlag';
     beatChart.setData(t, a.fs);

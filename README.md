@@ -89,6 +89,23 @@ Tipps:
 - Querformat zeigt mehr EKG auf einmal.
 - Exporte öffnen das Teilen-Menü: „In Dateien sichern“ legt PDF/CSV in der Dateien-App ab.
 
+## Methoden und Quellen
+Die Verfahren folgen etablierter Fachliteratur. Grenzwerte sind Richtwerte aus Studien an Gesunden;
+verschiedene Quellen weichen teils voneinander ab.
+
+| Bereich | Grundlage |
+|---|---|
+| R-Zacken-Erkennung | Pan & Tompkins (1985), IEEE Trans Biomed Eng |
+| HRV Zeit- und Frequenzbereich (SDNN, RMSSD, LF 0,04–0,15 Hz, HF 0,15–0,4 Hz) | Task Force der ESC/NASPE (1996), Circulation |
+| Poincaré SD1/SD2 | Brennan et al. (2001) |
+| Stress-Index | Baevsky; Darstellung als √SI wie in Kubios HRV |
+| DFA α1 und Belastungsschwellen (0,75 / 0,5) | Peng et al. (1995); Rogers & Gronwald et al. (2021) |
+| Vorhofflimmer-Muster (nRMSSD, Wendepunkte, Shannon-Entropie) | Dash et al. (2009), Ann Biomed Eng |
+| QTc | Bazett (1920), Fridericia (1920) |
+| Orthostase-Test (30:15), Tiefe Atmung (HF-Differenz ≥ 15 / 11–14 / ≤ 10) | Ewing et al. (1985); Übersicht bei [Kubios](https://www.kubios.com/blog/about-autonomic-nervous-system-function-analysis/) |
+| E/I-Untergrenze nach Alter: 1 + exp(−1,12 − 0,0198 · Alter) | zitiert in [arXiv:1901.05071](https://arxiv.org/pdf/1901.05071) |
+| Resonanzfrequenz-Atmung / Biofeedback | Lehrer et al. (2000, 2013); Kohärenz hier vereinfacht als Leistungsanteil um den Spektralgipfel |
+
 ## Technik
 - Reines HTML/CSS/JavaScript ohne Bibliotheken, kein Build-Schritt
 - Polar Measurement Data (PMD) Service `FB005C80-…`: ECG 130 Hz, 14 bit, Werte in µV

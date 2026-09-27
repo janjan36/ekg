@@ -531,31 +531,34 @@
       // Verstärkung 10 mm/mV, bei großen Ausschlägen auf 5 mm/mV reduzieren
       let lo = Infinity, hi = -Infinity;
       for (const v of t.y) { lo = Math.min(lo, v); hi = Math.max(hi, v); }
-      const gain = (hi - lo) / 1000 * 10 * pxPerMm > h - 36 ? 5 : 10;
+      const gain = (hi - lo) / 1000 * 10 * pxPerMm > h - 70 ? 5 : 10;
       const scale = gain * pxPerMm / 1000;
-      const mid = h / 2 + (hi + lo) / 2 * scale;   // Nulllinie so, dass die Kurve mittig liegt
+      // Nulllinie so, dass die Kurve mittig im Bereich über den Beschriftungen liegt
+      const mid = (h - 26) / 2 + 4 + (hi + lo) / 2 * scale;
       const X = i => i / (n - 1) * w;
       const Y = v => mid - v * scale;
 
       const m = t.marks;
-      const vline = (i, label) => {
-        if (i == null) return;
+      ctx.font = '11px system-ui, sans-serif';
+      ctx.textAlign = 'center';
+
+      // Grenzpunkte (Beginn/Ende) als gestrichelte Linien, Beschriftung unten – versetzt, damit nichts überlappt
+      const bounds = [[m.pOn, 'P-Beginn'], [m.qrsOn, 'QRS-Beginn'], [m.qrsOff, 'J'], [m.tEnd, 'T-Ende']];
+      let lastRight = -Infinity, row = 0;
+      for (const [i, label] of bounds) {
+        if (i == null) continue;
         const x = X(i);
         ctx.strokeStyle = c.markLine;
         ctx.setLineDash([4, 3]);
         ctx.lineWidth = 1;
-        ctx.beginPath(); ctx.moveTo(x, 18); ctx.lineTo(x, h); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(x, 4); ctx.lineTo(x, h - 20); ctx.stroke();
         ctx.setLineDash([]);
+        const tw = ctx.measureText(label).width;
+        row = x - tw / 2 < lastRight + 4 ? 1 - row : 0;
+        lastRight = x + tw / 2;
         ctx.fillStyle = c.markLine;
-        ctx.font = '11px system-ui, sans-serif';
-        ctx.textAlign = 'center';
-        ctx.fillText(label, x, 13);
-        ctx.textAlign = 'start';
-      };
-      vline(m.pOn, 'P');
-      vline(m.qrsOn, 'Q');
-      vline(m.qrsOff, 'J');
-      vline(m.tEnd, 'T-Ende');
+        ctx.fillText(label, x, h - (row ? 3 : 14));
+      }
 
       ctx.strokeStyle = c.trace;
       ctx.lineWidth = 2;
@@ -563,6 +566,20 @@
       ctx.beginPath();
       for (let i = 0; i < n; i++) (i ? ctx.lineTo(X(i), Y(t.y[i])) : ctx.moveTo(X(i), Y(t.y[i])));
       ctx.stroke();
+
+      // Wellengipfel als Punkte mit Buchstaben (über positiven, unter negativen Ausschlägen)
+      const peaks = [[m.pPeak, 'P'], [m.qPeak, 'Q'], [m.rPeak, 'R'], [m.sPeak, 'S'], [m.tPeak, 'T']];
+      ctx.font = 'bold 12px system-ui, sans-serif';
+      for (const [i, label] of peaks) {
+        if (i == null) continue;
+        const x = X(i), yy = Y(t.y[i]), up = t.y[i] >= 0;
+        ctx.fillStyle = c.paper;
+        ctx.beginPath(); ctx.arc(x, yy, 5, 0, 2 * Math.PI); ctx.fill();
+        ctx.fillStyle = c.markLine;
+        ctx.beginPath(); ctx.arc(x, yy, 3.5, 0, 2 * Math.PI); ctx.fill();
+        ctx.fillText(label, x, up ? yy - 8 : yy + 17);
+      }
+      ctx.textAlign = 'start';
 
       if (this.onLegend) this.onLegend(`${BEAT_SPEED} mm/s · ${gain} mm/mV`);
     }

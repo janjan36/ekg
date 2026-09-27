@@ -96,11 +96,11 @@
     return out;
   }
 
-  // Untere Grenze des E/I-Verhältnisses nach Alter (Richtwerte)
+  // Altersabhängige Untergrenze des E/I-Verhältnisses: 1 + exp(−1,12 − 0,0198 · Alter)
+  // (zitiert u. a. in arXiv:1901.05071; ergibt z. B. 1,22 mit 20, 1,15 mit 40, 1,10 mit 60 Jahren)
   function eiLowerLimit(age) {
-    const table = [[24, 1.17], [29, 1.15], [34, 1.13], [39, 1.12], [44, 1.10], [49, 1.08], [54, 1.07], [59, 1.06], [64, 1.04], [69, 1.03], [200, 1.02]];
     if (!age) return null;
-    return table.find(([a]) => age <= a)[1];
+    return 1 + Math.exp(-1.12 - 0.0198 * age);
   }
 
   function rating(level, text) { return { level, text }; }

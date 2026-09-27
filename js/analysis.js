@@ -361,6 +361,16 @@
     for (let i = c - 1; i >= Math.max(1, c - S(0.12)); i--) if (flat(i)) { qrsOn = i; break; }
     for (let i = c + 1; i <= Math.min(n - 2, c + S(0.16)); i++) if (flat(i)) { qrsOff = i; break; }
 
+    // Gipfel innerhalb des QRS-Komplexes: Q vor, S nach der R-Zacke (jeweils entgegengesetzt zu R)
+    const pol = Math.sign(y[c]) || 1;
+    const extremum = (from, to) => {
+      let best = null;
+      for (let i = from; i <= to; i++) if (-pol * y[i] > 0 && (best === null || -pol * y[i] > -pol * y[best])) best = i;
+      return best !== null && Math.abs(y[best]) >= Math.max(20, 0.05 * rAmp) ? best : null;
+    };
+    const qPeak = extremum(qrsOn != null ? qrsOn : c - S(0.06), c - 1);
+    const sPeak = extremum(c + 1, qrsOff != null ? qrsOff : c + S(0.08));
+
     // T-Ende nach der Tangentenmethode
     let tPeak = null, tEnd = null;
     if (qrsOff != null) {
@@ -412,7 +422,11 @@
     const qt = dur(qrsOn, tEnd, 240, 640);
     const rrS = rrMs / 1000;
     return {
-      y, c, marks: { pOn, pPeak, qrsOn, qrsOff, tPeak, tEnd },
+      y, c, marks: { pOn, pPeak, qrsOn, qPeak, rPeak: c, sPeak, qrsOff, tPeak, tEnd },
+      amps: {   // Amplituden gegenüber der Nulllinie in µV
+        p: pPeak != null ? y[pPeak] : null, q: qPeak != null ? y[qPeak] : null, r: y[c],
+        s: sPeak != null ? y[sPeak] : null, t: tPeak != null ? y[tPeak] : null
+      },
       pWave: pPeak != null,
       pq, qrs, qt, rr: rrMs,
       qtcB: qt ? qt / Math.sqrt(rrS) : null,

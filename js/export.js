@@ -173,20 +173,33 @@
     let lo = Infinity, hi = -Infinity;
     for (const v of times.y) { lo = Math.min(lo, v); hi = Math.max(hi, v); }
     const gain = (hi - lo) / 1000 * 10 > height - 8 ? 5 : 10;
-    const mid = y0 + height / 2 + 2 + (hi + lo) / 2 / 1000 * gain;
+    const mid = y0 + height / 2 + 3 + (hi + lo) / 2 / 1000 * gain;
     const X = i => x0 + i / fs * speed;
     drawGrid(page, x0, y0, width, height);
     const m = times.marks;
-    for (const [i, label] of [[m.pOn, 'P'], [m.qrsOn, 'Q'], [m.qrsOff, 'J'], [m.tEnd, 'T-Ende']]) {
+    // Grenzpunkte als Linien (Beschriftung oben, bei Platzmangel versetzt)
+    let lastRight = -Infinity, row = 0;
+    for (const [i, label] of [[m.pOn, 'P-Beginn'], [m.qrsOn, 'QRS-Beginn'], [m.qrsOff, 'J'], [m.tEnd, 'T-Ende']]) {
       if (i == null) continue;
+      const x = X(i), tw = global.Pdf.textWidth(label, 6.5, false);
+      row = x - tw / 2 < lastRight + 1 ? 1 - row : 0;
+      lastRight = x + tw / 2;
       page.stroke(C.mark, 0.25, [1, 0.8]);
-      page.line(X(i), y0 + 4, X(i), y0 + height);
-      page.text(X(i), y0 + 3, label, { size: 7, color: C.mark, align: 'center' });
+      page.line(x, y0 + 6, x, y0 + height);
+      page.text(x, y0 + (row ? 5.4 : 2.6), label, { size: 6.5, color: C.mark, align: 'center' });
     }
     page.stroke(C.trace, 0.45);
     page.polyline(Array.from(times.y, (v, i) => [X(i), mid - v / 1000 * gain]));
-    page.text(x0, y0 + height + 4, `Durchschnittsschlag aus ${count} Schlägen`, { size: 7.5, color: C.muted });
-    page.text(x0, y0 + height + 7.5, `${speed} mm/s · ${gain} mm/mV`, { size: 7.5, color: C.muted });
+    // Wellengipfel als Punkte mit Buchstaben
+    for (const [i, label] of [[m.pPeak, 'P'], [m.qPeak, 'Q'], [m.rPeak, 'R'], [m.sPeak, 'S'], [m.tPeak, 'T']]) {
+      if (i == null) continue;
+      const x = X(i), yy = mid - times.y[i] / 1000 * gain, up = times.y[i] >= 0;
+      page.fill(C.mark); page.circle(x, yy, 0.7);
+      page.text(x, up ? yy - 1.6 : yy + 3.6, label, { size: 7, bold: true, color: C.mark, align: 'center' });
+    }
+    const a = times.amps, mv = v => (v == null ? '–' : (v / 1000).toFixed(2).replace('.', ','));
+    page.text(x0, y0 + height + 4, `Durchschnittsschlag aus ${count} Schlägen · ${speed} mm/s · ${gain} mm/mV`, { size: 7, color: C.muted });
+    page.text(x0, y0 + height + 7.5, `Amplituden (mV): P ${mv(a.p)} · R ${mv(a.r)} · S ${mv(a.s)} · T ${mv(a.t)}`, { size: 7, color: C.muted });
     return { width, height: height + 8 };
   }
 
