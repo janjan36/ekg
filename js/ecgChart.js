@@ -408,88 +408,6 @@
     }
   }
 
-  /* ---------- Atemkurve (live: letzte 30 s rechtsbündig; Aufnahme: gesamte Dauer) ---------- */
-  class RespChart {
-    constructor(canvas, onSeek) {
-      this.canvas = canvas;
-      this.colors = readColors();
-      this.signal = new Float32Array(0);
-      this.peaks = [];
-      this.fs = 5;
-      this.duration = 30;
-      this.view = null;
-      this.message = 'Keine Atemdaten';
-      // Gleiche Ränder wie das Tachogramm, damit beide Zeitachsen übereinander passen
-      this.padL = onSeek ? 34 : 0;
-      this.padR = onSeek ? 6 : 0;
-      if (onSeek) {
-        canvas.addEventListener('click', e => {
-          const r = canvas.getBoundingClientRect();
-          onSeek((e.clientX - r.left - this.padL) / (r.width - this.padL - this.padR) * this.duration);
-        });
-      }
-      new ResizeObserver(() => this.render()).observe(canvas.parentElement);
-      themeListeners.push(() => { this.colors = readColors(); this.render(); });
-    }
-
-    setData({ signal, peaks, fs }, duration, message) {
-      this.signal = signal || new Float32Array(0);
-      this.peaks = peaks || [];
-      this.fs = fs || 5;
-      this.duration = duration;
-      if (message) this.message = message;
-      this.render();
-    }
-
-    setView(t0, t1) { this.view = [t0, t1]; this.render(); }
-
-    render() {
-      const parent = this.canvas.parentElement;
-      const w = parent.clientWidth, h = parent.clientHeight;
-      if (!w || !h) return;
-      const ctx = setupCanvas(this.canvas, w, h);
-      const c = this.colors, s = this.signal, n = s.length;
-
-      ctx.fillStyle = c.paper;
-      ctx.fillRect(0, 0, w, h);
-      if (n < 2) {
-        ctx.fillStyle = c.muted;
-        ctx.font = '12px system-ui, sans-serif';
-        ctx.fillText(this.message, 8, h / 2 + 4);
-        return;
-      }
-      // Daten rechtsbündig, falls kürzer als das Zeitfenster (Live-Anlauf)
-      const t0 = this.duration - n / this.fs;
-      const plotW = w - this.padL - this.padR;
-      const T = t => this.padL + t / this.duration * plotW;
-      const X = i => T(t0 + i / this.fs);
-      let amp = 0;
-      for (let i = 0; i < n; i++) amp = Math.max(amp, Math.abs(s[i]));
-      amp = Math.max(amp, 1) * 1.15;
-      const Y = v => h / 2 - v / amp * (h / 2 - 6);
-
-      if (this.view) {
-        ctx.fillStyle = c.minor;
-        const a = T(this.view[0]), b = T(this.view[1]);
-        ctx.fillRect(a, 0, Math.max(2, b - a), h);
-      }
-      ctx.strokeStyle = c.major;
-      ctx.lineWidth = 1;
-      ctx.beginPath(); ctx.moveTo(0, h / 2 + 0.5); ctx.lineTo(w, h / 2 + 0.5); ctx.stroke();
-
-      ctx.strokeStyle = c.tachoLine;
-      ctx.lineWidth = 1.4;
-      ctx.beginPath();
-      for (let i = 0; i < n; i++) (i ? ctx.lineTo(X(i), Y(s[i])) : ctx.moveTo(X(i), Y(s[i])));
-      ctx.stroke();
-
-      ctx.fillStyle = c.tachoBad;
-      for (const p of this.peaks) {
-        ctx.beginPath(); ctx.arc(X(p), Y(s[p]), 3, 0, 2 * Math.PI); ctx.fill();
-      }
-    }
-  }
-
   /* ---------- Durchschnittsschlag mit Messpunkten ---------- */
   const BEAT_SPEED = 50;   // mm/s – gespreizt, damit die Zeiten gut erkennbar sind
 
@@ -585,5 +503,5 @@
     }
   }
 
-  global.EcgCharts = { LiveEcgChart, ReviewEcgChart, Tachogram, RespChart, MedianBeatChart, DEFAULT_PX_PER_MM };
+  global.EcgCharts = { LiveEcgChart, ReviewEcgChart, Tachogram, MedianBeatChart, DEFAULT_PX_PER_MM };
 })(window);

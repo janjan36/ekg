@@ -1,5 +1,4 @@
-/* Weitere Diagramme: Frequenzspektrum, Poincaré-Plot, Herzfrequenz mit Ereignissen (Tests, live)
- * und Verlaufskurven. Alle mit Hover-/Tipp-Anzeige der genauen Werte. */
+/* Weitere Diagramme: Frequenzspektrum, Poincaré-Plot und Verlaufskurven. Alle mit Hover-/Tipp-Anzeige der genauen Werte. */
 (function (global) {
   'use strict';
 
@@ -9,7 +8,7 @@
     return {
       surface: v('--card'), text: v('--text'), muted: v('--muted'), grid: v('--border'),
       line: v('--tacho-line'), s1: v('--series-1'), s2: v('--series-2'), band: v('--trend-band'),
-      mark: v('--mark-line'), pacer: v('--pacer-band'), bad: v('--tacho-bad')
+      mark: v('--mark-line'), bad: v('--tacho-bad')
     };
   }
 
@@ -188,70 +187,6 @@
     }
   }
 
-  /* ---------- Herzfrequenz mit Ereignissen (Testauswertung und live) ---------- */
-  class EventHrChart extends BaseChart {
-    // points: [{ t, hr }], marks: [{ t, label }], range: [t0, t1], pacer: { start, rate, inhale } (live)
-    setData(points, marks = [], range = null, pacer = null) {
-      this.points = points; this.marks = marks; this.range = range; this.pacer = pacer;
-      this.render();
-    }
-
-    render() {
-      const s = setup(this.canvas);
-      if (!s) return;
-      const { ctx, w, h } = s, c = this.c;
-      ctx.fillStyle = c.surface; ctx.fillRect(0, 0, w, h);
-      const pts = this.points || [];
-      if (pts.length < 2) return this.empty(ctx, w, h, 'Warte auf Herzschläge …');
-      const t0 = this.range ? this.range[0] : pts[0].t, t1 = this.range ? this.range[1] : pts[pts.length - 1].t;
-      let lo = Math.min(...pts.map(p => p.hr)), hi = Math.max(...pts.map(p => p.hr));
-      lo = Math.floor((lo - 3) / 5) * 5; hi = Math.ceil((hi + 3) / 5) * 5;
-      const padL = 34, padB = 16, padT = 16, pw = w - padL - 6, ph = h - padT - padB;
-      const X = t => padL + (t - t0) / ((t1 - t0) || 1) * pw, Y = v => padT + ph - (v - lo) / (hi - lo) * ph;
-
-      // Einatem-Phasen hinterlegen (live beim Atemtakt)
-      if (this.pacer) {
-        const cyc = 60 / this.pacer.rate, tin = cyc * this.pacer.inhale;
-        ctx.fillStyle = c.pacer;
-        for (let t = this.pacer.start; t < t1; t += cyc) {
-          const a = Math.max(t, t0), b = Math.min(t + tin, t1);
-          if (b > a) ctx.fillRect(X(a), padT, X(b) - X(a), ph);
-        }
-      }
-
-      ctx.fillStyle = c.muted; ctx.font = '11px system-ui, sans-serif';
-      ctx.fillText(String(hi), 4, padT + 9);
-      ctx.fillText(String(lo), 4, padT + ph);
-      ctx.fillText('/min', 4, padT + ph / 2 + 4);
-
-      for (const m of this.marks) {
-        if (m.t < t0 || m.t > t1) continue;
-        ctx.strokeStyle = c.mark; ctx.setLineDash([4, 3]); ctx.lineWidth = 1;
-        ctx.beginPath(); ctx.moveTo(X(m.t), padT); ctx.lineTo(X(m.t), padT + ph); ctx.stroke(); ctx.setLineDash([]);
-        ctx.fillStyle = c.mark; ctx.fillText(m.label, Math.min(X(m.t) + 3, w - 60), 11);
-      }
-
-      ctx.strokeStyle = c.line; ctx.lineWidth = 2; ctx.lineJoin = 'round';
-      ctx.beginPath();
-      pts.forEach((p, i) => (i ? ctx.lineTo(X(p.t), Y(p.hr)) : ctx.moveTo(X(p.t), Y(p.hr))));
-      ctx.stroke();
-
-      ctx.fillStyle = c.muted;
-      ctx.fillText(`${Math.round(t0)} s`, padL, h - 3);
-      ctx.textAlign = 'right'; ctx.fillText(`${Math.round(t1)} s`, w - 6, h - 3); ctx.textAlign = 'start';
-
-      if (this.hoverX != null && this.hoverX >= padL) {
-        const t = t0 + (this.hoverX - padL) / pw * (t1 - t0);
-        let best = pts[0];
-        for (const p of pts) if (Math.abs(p.t - t) < Math.abs(best.t - t)) best = p;
-        ctx.strokeStyle = c.muted; ctx.setLineDash([3, 3]);
-        ctx.beginPath(); ctx.moveTo(X(best.t), padT); ctx.lineTo(X(best.t), padT + ph); ctx.stroke(); ctx.setLineDash([]);
-        ctx.fillStyle = c.line; ctx.beginPath(); ctx.arc(X(best.t), Y(best.hr), 4, 0, 2 * Math.PI); ctx.fill();
-        this.showTip(X(best.t), Y(best.hr), `<b>${Math.round(best.hr)} /min</b><br>${de(best.t, 1)} s`);
-      }
-    }
-  }
-
   /* ---------- Verlauf über Aufnahmen ---------- */
   class TrendChart extends BaseChart {
     // points: [{ date (ms), value, id }], opts: { title, unit, decimals, onOpen }
@@ -325,5 +260,5 @@
     }
   }
 
-  global.Charts2 = { PsdChart, PoincareChart, EventHrChart, TrendChart };
+  global.Charts2 = { PsdChart, PoincareChart, TrendChart };
 })(window);

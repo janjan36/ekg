@@ -27,7 +27,6 @@
   --series-1: #2a78d6;
   --series-2: #eb6834;
   --trend-band: rgba(82, 81, 78, 0.12);
-  --pacer-band: rgba(42, 120, 214, 0.10);
   color-scheme: light;
 }
 
@@ -60,7 +59,6 @@
     --series-1: #3987e5;
     --series-2: #d95926;
     --trend-band: rgba(195, 194, 183, 0.14);
-    --pacer-band: rgba(57, 135, 229, 0.16);
     color-scheme: dark;
   }
 }
@@ -176,7 +174,7 @@ h2 { font-size: 1.05rem; margin: 0 0 10px; }
 
 .tiles {
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 10px;
   margin-bottom: 12px;
 }
@@ -205,9 +203,7 @@ h2 { font-size: 1.05rem; margin: 0 0 10px; }
 .chart-opts { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
 
 .ecg-live { height: 320px; border-radius: 8px; overflow: hidden; border: 1px solid var(--border); }
-.ecg-live canvas, .tacho canvas, .resp-live canvas { display: block; width: 100%; height: 100%; }
-.resp-live { height: 90px; border-radius: 8px; overflow: hidden; border: 1px solid var(--border); }
-.tacho.resp { height: 90px; }
+.ecg-live canvas, .tacho canvas { display: block; width: 100%; height: 100%; }
 .sub-label { font-size: 0.8rem; color: var(--muted); margin: 10px 0 4px; }
 
 .tag {
@@ -341,54 +337,11 @@ h2 { font-size: 1.05rem; margin: 0 0 10px; }
 }
 .tabs button[aria-selected="true"] { background: var(--card); color: var(--text); box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12); }
 
-/* ---------- Tests ---------- */
-.test-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 12px; }
-.test-card {
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-.test-card h3 { margin: 0; font-size: 1rem; }
-.test-card p { margin: 0; font-size: 0.9rem; }
-.test-card .meta { color: var(--muted); font-size: 0.82rem; margin-top: auto; }
-.test-card .btn { align-self: flex-start; }
-.test-card input[type="number"] {
-  width: 80px; font: inherit; color: var(--text); background: var(--card);
-  border: 1px solid var(--border); border-radius: 6px; padding: 5px 8px;
-}
-.test-tag {
-  margin-left: 8px; font-size: 0.75rem; font-weight: 600; color: var(--mark-line);
-  border: 1px solid currentColor; border-radius: 999px; padding: 0 7px;
-}
-
-.run-head { display: flex; justify-content: space-between; align-items: center; }
-.run-phase { text-align: center; margin: 8px 0 12px; }
-.run-title { font-size: 1.6rem; font-weight: 700; }
-.progress { height: 6px; background: var(--btn); border-radius: 3px; overflow: hidden; }
-.progress > div { height: 100%; width: 0; background: var(--accent); transition: width 0.3s linear; }
-.run-time { text-align: center; color: var(--muted); font-size: 0.85rem; margin: 6px 0 10px; font-variant-numeric: tabular-nums; }
-.pacer-wrap { display: flex; flex-direction: column; align-items: center; gap: 8px; margin: 6px 0 14px; }
-.pacer {
-  width: 180px; height: 180px; border-radius: 50%;
-  background: radial-gradient(circle at 40% 35%, color-mix(in srgb, var(--series-1) 55%, white), var(--series-1));
-  transform: scale(0.35);
-  will-change: transform;
-}
-.pacer-wrap[data-phase="out"] .pacer {
-  background: radial-gradient(circle at 40% 35%, color-mix(in srgb, var(--series-1) 30%, white), color-mix(in srgb, var(--series-1) 70%, var(--card)));
-}
-.pacer-text { font-size: 1.2rem; font-weight: 600; font-variant-numeric: tabular-nums; }
-.run-values { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-.run-chart { height: 150px; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
-.run-chart canvas, .chart-box canvas, .trend-box canvas { display: block; width: 100%; height: 100%; }
+.chart-box canvas, .trend-box canvas { display: block; width: 100%; height: 100%; }
 
 /* ---------- Diagramme ---------- */
 .chart-box { height: 200px; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
 .chart-box.square { height: 240px; }
-.test-chart { height: 150px; }
 .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; vertical-align: -1px; }
 .swatch.lf { background: var(--series-1); }
 .swatch.hf { background: var(--series-2); }
@@ -406,7 +359,6 @@ h2 { font-size: 1.05rem; margin: 0 0 10px; }
   white-space: nowrap;
   z-index: 2;
 }
-.test-result { border-color: color-mix(in srgb, var(--mark-line) 45%, var(--border)); }
 
 /* ---------- Verlauf ---------- */
 .trend-head { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; }
@@ -441,14 +393,8 @@ h2 { font-size: 1.05rem; margin: 0 0 10px; }
 }
 .share-bar span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 
-@media (max-width: 1000px) {
-  .tiles { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-}
-
 @media (max-width: 700px) {
   .tiles, .analysis-live { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .run-values { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-  .run-values .value { font-size: 1.4rem; }
   .tabs button { font-size: 0.88rem; padding: 8px 2px; }
   .trend-grid { grid-template-columns: minmax(0, 1fr); }
   .analysis-grid { grid-template-columns: minmax(0, 1fr); }

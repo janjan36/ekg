@@ -4,62 +4,45 @@
 (function (global) {
   'use strict';
 
-  const METRICS_VERSION = 1;
+  const METRICS_VERSION = 3;   // 3: ohne Atmung/Lage, QTc nach Fridericia
 
-  // rec: { meta, data }; ana/resp/posture optional, falls schon berechnet
+  // rec: { meta, data }; pre.ana optional, falls schon berechnet
   function computeMetrics(rec, pre = {}) {
-    const { data, meta } = rec;
-    const rr = Array.from(data.rr || []);
-    const stats = global.Hrv.compute(rr);
-    const ana = pre.ana !== undefined ? pre.ana : global.EkgAnalysis.analyze(data.ecg, data.fs);
-    const resp = pre.resp !== undefined ? pre.resp : global.Resp.analyze(data.acc, data.accFs);
-    const post = pre.posture !== undefined ? pre.posture : global.Posture.analyze(data.acc, data.accFs, pre.upright || null);
+    const { data } = rec;
+    const stats = global.Hrv.compute(Array.from(data.rr || []));
+    const ana = pre.ana !== undefined ? pre.ana
+      : global.EkgAnalysis.analyze(data.ecg, data.fs, { ref: { rr: data.rr, rrT: data.rrT } });
     const freq = global.HrvX.frequency(data.rr, data.rrT);
-    const dfa = global.HrvX.dfaOf(data.rr);
     return {
       v: METRICS_VERSION,
       hr: stats ? stats.meanHR : null,
       rmssd: stats ? stats.rmssd : null,
       sdnn: stats ? stats.sdnn : null,
-      resp: resp ? resp.rate : null,
-      qtc: ana && ana.times ? ana.times.qtcB : null,
+      // QTc nur bei Frequenz ≤ 100/min (darüber ist die Korrektur unzuverlässig)
+      qtc: ana && ana.times && ana.rhythm.hr <= 100 ? ana.times.qtcF : null,
       lfhf: freq && freq.lfReliable ? freq.lfhf : null,
-      si: global.HrvX.stressIndex(data.rr),
-      a1: dfa.a1,
-      posture: post ? post.main : null,
-      motion: post ? post.motion : null
+      si: global.HrvX.stressIndex(data.rr)
     };
   }
 
-  const isRest = m => !m.test && (!m.metrics || m.metrics.motion == null || m.metrics.motion < 20);
+  // Im Verlauf nur echte Gurt-Aufnahmen: keine Demo-Daten und keine Aufnahmen aus den früheren
+  // geführten Tests (andere Bedingungen, z. B. Aufstehen oder gelenkte Atmung)
+  const include = m => !/^Demo/.test(m.device || '') && !m.test;
 
   const SERIES = [
-    { key: 'hr', title: 'Herzfrequenz (Ø)', unit: '/min', decimals: 0, rest: true },
-    { key: 'rmssd', title: 'RMSSD', unit: 'ms', decimals: 0, rest: true },
-    { key: 'resp', title: 'Atemfrequenz', unit: '/min', decimals: 1, rest: true },
-    { key: 'qtc', title: 'QTc (Bazett)', unit: 'ms', decimals: 0, rest: true },
-    { key: 'lfhf', title: 'LF/HF', unit: '', decimals: 2, rest: true },
-    { key: 'si', title: 'Stress-Index', unit: '', decimals: 1, rest: true },
-    { test: 'orthostatic', key: 'ratio3015', title: 'Orthostase: 30:15-Verhältnis', unit: '', decimals: 2 },
-    { test: 'orthostatic', key: 'dHR3', title: 'Orthostase: HF-Anstieg nach 3 min', unit: '/min', decimals: 0 },
-    { test: 'deepBreathing', key: 'dHR', title: 'Tiefe Atmung: HF-Schwankung', unit: '/min', decimals: 0 },
-    { test: 'deepBreathing', key: 'ei', title: 'Tiefe Atmung: E/I-Verhältnis', unit: '', decimals: 2 },
-    { test: 'biofeedback', key: 'coherence', title: 'Biofeedback: Kohärenz Ø', unit: '%', decimals: 0 }
+    { key: 'hr', title: 'Herzfrequenz (Ø)', unit: '/min', decimals: 0 },
+    { key: 'rmssd', title: 'RMSSD', unit: 'ms', decimals: 0 },
+    { key: 'qtc', title: 'QTc (Fridericia)', unit: 'ms', decimals: 0 },
+    { key: 'lfhf', title: 'LF/HF', unit: '', decimals: 2 },
+    { key: 'si', title: 'Stress-Index', unit: '', decimals: 1 }
   ];
 
-  function valueOf(meta, s) {
-    if (s.test) return meta.test && meta.test.type === s.test && meta.test.key ? meta.test.key[s.key] : null;
-    return meta.metrics ? meta.metrics[s.key] : null;
-  }
-
   class TrendView {
-    constructor({ store, onOpen, getUpright }) {
+    constructor({ store, onOpen }) {
       this.store = store;
       this.onOpen = onOpen;
-      this.getUpright = getUpright;
       this.charts = [];
       this.table = false;
-      document.getElementById('chkRestOnly').onchange = () => this.render();
       document.getElementById('btnTrendTable').onclick = () => {
         this.table = !this.table;
         document.getElementById('btnTrendTable').textContent = this.table ? 'Als Diagramme' : 'Als Tabelle';
@@ -67,35 +50,35 @@
       };
     }
 
-    // Fehlende Kennwerte älterer Aufnahmen einmalig nachberechnen
+    // Fehlende oder veraltete Kennwerte einmalig nachberechnen
     async backfill(items) {
       for (const m of items) {
         if (m.metrics && m.metrics.v === METRICS_VERSION) continue;
         const rec = await this.store.get(m.id);
         if (!rec) continue;
-        m.metrics = computeMetrics(rec, { upright: this.getUpright() });
+        m.metrics = computeMetrics(rec);
         await this.store.updateMeta(m);
       }
     }
 
     async render() {
-      const all = (await this.store.list()).slice().sort((a, b) => a.startTime - b.startTime);
+      const all = (await this.store.list()).filter(include).sort((a, b) => a.startTime - b.startTime);
       await this.backfill(all);
-      const restOnly = document.getElementById('chkRestOnly').checked;
       const wrap = document.getElementById('trendCharts');
       const tableEl = document.getElementById('trendTable');
       wrap.innerHTML = '';
       this.charts = [];
 
-      const series = SERIES.map(s => {
-        const src = s.test ? all : all.filter(m => !restOnly || isRest(m));
-        return { s, points: src.map(m => ({ date: m.startTime, value: valueOf(m, s), id: m.id })).filter(p => p.value != null) };
-      }).filter(x => x.points.length);
+      const series = SERIES.map(s => ({
+        s,
+        points: all.map(m => ({ date: m.startTime, value: m.metrics ? m.metrics[s.key] : null, id: m.id }))
+          .filter(p => p.value != null)
+      })).filter(x => x.points.length);
 
       document.getElementById('trendEmpty').hidden = series.length > 0;
       wrap.hidden = this.table;
       tableEl.hidden = !this.table;
-      if (this.table) return this.renderTable(all, restOnly);
+      if (this.table) return this.renderTable(all);
 
       for (const { s, points } of series) {
         const card = document.createElement('div');
@@ -113,24 +96,19 @@
       }
     }
 
-    renderTable(all, restOnly) {
+    renderTable(all) {
       const el = document.getElementById('trendTable');
-      const rows = all.filter(m => m.test || !restOnly || isRest(m)).reverse();
       const f = (v, d) => (v == null ? '–' : v.toFixed(d).replace('.', ','));
-      const mm = m => m.metrics || {};
-      el.innerHTML = `<table><thead><tr><th>Datum</th><th>Art</th><th>HF</th><th>RMSSD</th><th>Atmung</th>
-        <th>QTc</th><th>LF/HF</th><th>Lage</th><th>Testwert</th></tr></thead><tbody></tbody></table>`;
+      el.innerHTML = `<table><thead><tr><th>Datum</th><th>Dauer</th><th>HF</th><th>RMSSD</th><th>SDNN</th>
+        <th>QTc</th><th>LF/HF</th><th>Stress-Index</th></tr></thead><tbody></tbody></table>`;
       const tb = el.querySelector('tbody');
-      for (const m of rows) {
+      for (const m of all.slice().reverse()) {
+        const mm = m.metrics || {};
         const tr = document.createElement('tr');
-        const t = m.test;
-        const key = t && t.key ? Object.entries(t.key).filter(([, v]) => v != null)
-          .map(([k, v]) => `${k === 'ratio3015' ? '30:15' : k === 'dHR3' ? 'ΔHF 3 min' : k === 'dHR' ? 'ΔHF' : k === 'ei' ? 'E/I' : k === 'coherence' ? 'Kohärenz' : k === 'resonanceRate' ? 'Resonanz' : k} ${f(v, k === 'ratio3015' || k === 'ei' ? 2 : 0)}`).join(', ') : '';
         const cells = [
           new Date(m.startTime).toLocaleString('de-DE', { dateStyle: 'short', timeStyle: 'short' }),
-          t ? global.Tests.NAMES[t.type] : 'Aufnahme',
-          f(mm(m).hr, 0), f(mm(m).rmssd, 0), f(mm(m).resp, 1), f(mm(m).qtc, 0), f(mm(m).lfhf, 2),
-          mm(m).posture || '–', key || '–'
+          global.EkgExport.fmtDuration(m.duration),
+          f(mm.hr, 0), f(mm.rmssd, 0), f(mm.sdnn, 0), f(mm.qtc, 0), f(mm.lfhf, 2), f(mm.si, 1)
         ];
         for (const c of cells) { const td = document.createElement('td'); td.textContent = c; tr.appendChild(td); }
         tr.onclick = () => this.onOpen(m.id);

@@ -269,10 +269,12 @@
     return Math.sqrt(s / (list.length - 1)) / mean(list);
   }
 
-  // Unregelmäßigkeit nach Dash et al. (2009): nRMSSD, Wendepunkte, Shannon-Entropie
+  // Unregelmäßigkeit nach Dash et al. (2009): nRMSSD, Wendepunkte, Shannon-Entropie.
+  // Dash verwendet Abschnitte von 128 Schlägen – unter 100 Schlägen ist die Aussage zu unsicher.
+  const AF_MIN_BEATS = 100;
   function irregularity(rr) {
     const N = rr.length;
-    if (N < 30) return null;
+    if (N < AF_MIN_BEATS) return null;
     let tp = 0;
     for (let i = 1; i < N - 1; i++) if ((rr[i] - rr[i - 1]) * (rr[i + 1] - rr[i]) < 0) tp++;
     const mu = (2 * N - 4) / 3, sigma = Math.sqrt((16 * N - 29) / 90);
@@ -288,7 +290,8 @@
     return { nRmssd: nr, tprOk: Math.abs(tp - mu) <= 1.96 * sigma, she, af: nr > 0.1 && she > 0.7 && Math.abs(tp - mu) <= 1.96 * sigma };
   }
 
-  function rhythmOf(beats) {
+  // ref: unabhängige RR-Intervalle des Gurts { rr: [ms], rrT: [s] } zur Gegenprüfung von Pausen
+  function rhythmOf(beats, fs, ref) {
     const allRR = [];
     for (let k = 1; k < beats.length; k++) {
       const b = beats[k], p = beats[k - 1];
@@ -305,13 +308,25 @@
     }
     const base = nnRR.length >= 3 ? nnRR : allRR;
     const medianRR = median(base);
-    const pauses = beats.filter(b => b.rr != null && b.rr > 2000);
+    // Pause nur melden, wenn auch die RR-Messung des Gurts (eigene Erkennung) dort ein langes Intervall zeigt –
+    // sonst ist es wahrscheinlich eine übersehene R-Zacke
+    let pauses = beats.filter(b => b.rr != null && b.rr > 2000);
+    if (ref && ref.rr && ref.rr.length) {
+      pauses = pauses.filter(p => {
+        const t = p.i / fs;
+        for (let j = 0; j < ref.rr.length; j++) {
+          if (Math.abs(ref.rrT[j] - t) < 5 && ref.rr[j] > 0.8 * p.rr) return true;
+        }
+        return false;
+      });
+    }
 
     let label;
     if (base.length < 10) label = { code: 'na', text: 'nicht beurteilbar (zu wenige auswertbare Schläge)' };
     else if (af) label = { code: 'irregular', text: 'deutlich unregelmäßig – Muster wie bei Vorhofflimmern möglich' };
     else if (nRmssd(nnRR) > 0.05) label = { code: 'variable', text: 'regelmäßig mit gleichmäßiger Schwankung (z. B. atemabhängig)' };
     else label = { code: 'regular', text: 'regelmäßig' };
+    if (!irr && label.code !== 'na') label.text += ' (Vorhofflimmern erst ab ca. 100 Schlägen beurteilbar)';
 
     return {
       label, af, irr, pauses, medianRR,
@@ -476,10 +491,16 @@
       if (times.pq != null && times.pq > 200) notes.push(['info', `PQ-Zeit verlängert (${Math.round(times.pq)} ms)`]);
       if (times.pq != null && times.pq < 120) notes.push(['info', `PQ-Zeit kurz (${Math.round(times.pq)} ms)`]);
       if (times.qrs != null && times.qrs >= 120) notes.push(['info', `QRS verbreitert (${Math.round(times.qrs)} ms)`]);
-      if (times.qtcB != null && times.qtcB > 460) notes.push(['warn', `QTc verlängert (${Math.round(times.qtcB)} ms)`]);
-      if (times.qtcB != null && times.qtcB < 340) notes.push(['info', `QTc kurz (${Math.round(times.qtcB)} ms)`]);
+      // QTc nach Fridericia (Bazett überkorrigiert bei hoher Frequenz). Normgrenze nach AHA/ACCF/HRS 2009:
+      // Männer 450, Frauen 460 ms. Bei Frequenz > 100/min oder unregelmäßigem Rhythmus keine Bewertung.
+      const qtc = times.qtcF;
+      const qtcRated = qtc != null && rhythm.hr != null && rhythm.hr <= 100 && !rhythm.af;
+      if (qtcRated && qtc > 500) notes.push(['warn', `QTc deutlich erhöht (${Math.round(qtc)} ms, Fridericia) – mit einem 12-Kanal-EKG überprüfen lassen`]);
+      else if (qtcRated && qtc > 460) notes.push(['info', `QTc über der Normgrenze (${Math.round(qtc)} ms; Grenze Männer 450, Frauen 460 ms) – Brustgurt-Messung ist nur eine Näherung`]);
+      if (qtcRated && qtc < 340) notes.push(['info', `QTc kurz (${Math.round(qtc)} ms, Fridericia)`]);
+      if (qtc != null && !qtcRated && rhythm.hr > 100) notes.push(['info', 'QTc bei Herzfrequenz über 100/min nicht bewertet (Frequenzkorrektur unzuverlässig)']);
       notes.forEach(([l, t]) => add(l, t));
-      if (!notes.length && (times.qrs != null || times.qtcB != null)) add('ok', 'EKG-Zeiten im Normbereich (Näherung)');
+      if (!notes.length && (times.qrs != null || qtc != null)) add('ok', 'EKG-Zeiten im Normbereich (Näherung)');
       if (!times.pWave && !rhythm.af) add('info', 'P-Welle nicht sicher erkennbar (beim Brustgurt häufig)');
     } else {
       add('info', 'EKG-Zeiten nicht bestimmbar (zu wenige saubere Schläge)');
@@ -488,13 +509,14 @@
   }
 
   /* ---------- Gesamtauswertung ---------- */
-  function analyze(raw, fs) {
+  // opts.ref: RR-Intervalle des Gurts { rr, rrT } zur Gegenprüfung (optional)
+  function analyze(raw, fs, opts = {}) {
     if (!raw || raw.length < 8 * fs) return null;
     const clean = zeroPhase(raw, () => [Biquad.highpass(fs, 0.5), Biquad.notch(fs, 50, 8), Biquad.lowpass(fs, 40)]);
     const { r } = detectR(clean, fs);
     const quality = assessQuality(clean, r, fs);
     const beats = classify(clean, r, fs, quality.bad);
-    const rhythm = rhythmOf(beats);
+    const rhythm = rhythmOf(beats, fs, opts.ref);
     const avg = rhythm.medianRR ? medianBeat(clean, beats, fs, rhythm.medianRR) : null;
     const times = avg ? measure(avg, fs, rhythm.medianRR) : null;
     const counts = { S: 0, V: 0, A: 0, U: 0, N: 0, total: 0 };
@@ -509,5 +531,5 @@
 
   const TYPE_NAMES = { S: 'SVES', V: 'VES', A: 'abweichend', U: 'gestört', N: 'normal' };
 
-  global.EkgAnalysis = { analyze, TYPE_NAMES };
+  global.EkgAnalysis = { analyze, irregularity, TYPE_NAMES, AF_MIN_BEATS };
 })(window);

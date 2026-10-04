@@ -101,17 +101,6 @@
     return deliverText(fileBase(rec.meta) + '_rr.csv', bom + lines.join('\r\n') + '\r\n', 'text/csv;charset=utf-8');
   }
 
-  // Atemkurve (5 Hz, Brustkorbbewegung in mG entlang der Hauptachse) mit Markierung der Atemzüge.
-  function respCsv(rec, resp, fmt) {
-    const { sep, bom, num } = csvFormat(fmt);
-    const peaks = new Set(resp.peaks);
-    const lines = [['Zeit_s', 'Atemsignal_mG', 'Atemzug'].join(sep)];
-    for (let i = 0; i < resp.signal.length; i++) {
-      lines.push([num(i / resp.fs, 1), num(resp.signal[i], 2), peaks.has(i) ? 1 : 0].join(sep));
-    }
-    return deliverText(fileBase(rec.meta) + '_atmung.csv', bom + lines.join('\r\n') + '\r\n', 'text/csv;charset=utf-8');
-  }
-
   // Eine Zeile pro RR-Intervall in ms – wird von Kubios HRV direkt gelesen.
   function rrTxt(rec) {
     const text = Array.from(rec.data.rr, v => Math.round(v)).join('\r\n') + '\r\n';
@@ -206,8 +195,8 @@
   const f0 = v => (v == null ? '–' : v.toFixed(0));
   const ms = v => (v == null ? '–' : `${Math.round(v)} ms`);
 
-  // Befundblock: Überschrift mit Punkt, Befunde mit Punkten, optional Wertezeilen; gibt neues y zurück
-  function drawFindings(page, x, y, width, headline, level, findings, rows) {
+  // Befundblock: Überschrift mit Punkt, Befunde mit Punkten; gibt neues y zurück
+  function drawFindings(page, x, y, width, headline, level, findings) {
     page.fill(C.level[level || 'info']); page.circle(x + 1.2, y - 1.3, 1.2);
     page.text(x + 4, y, headline, { size: 11, bold: true });
     y += 5.5;
@@ -218,27 +207,12 @@
         y += 4.2;
       }
     }
-    if (rows && rows.length) {
-      y += 0.5;
-      const runs = [];
-      rows.forEach(([k, v], i) => runs.push([`${k} `, true], [`${v}${i < rows.length - 1 ? '   ' : ''}`, false]));
-      // Wertezeilen umbrechen, falls zu lang
-      let line = [], w = 0;
-      const flush = () => { if (line.length) { page.runs(x, y, line, { size: 8.5 }); y += 4; line = []; w = 0; } };
-      for (let i = 0; i < runs.length; i += 2) {
-        const pw = global.Pdf.textWidth(runs[i][0], 8.5, true) + global.Pdf.textWidth(runs[i + 1][0], 8.5, false);
-        if (w + pw > width) flush();
-        line.push(runs[i], runs[i + 1]);
-        w += pw;
-      }
-      flush();
-    }
     return y;
   }
 
-  // cur: geöffnete Aufnahme aus app.js ({ meta, data, stats, resp, analysis, hrvx, posture, test })
+  // cur: geöffnete Aufnahme aus app.js ({ meta, data, stats, analysis, hrvx })
   async function pdfReport(cur, view) {
-    const { meta, data, stats, resp, analysis: ana, hrvx, posture: post, test } = cur;
+    const { meta, data, stats, analysis: ana, hrvx } = cur;
     const fs = data.fs;
     const values = global.EkgFilters.filtfilt(data.ecg, fs, view);
     const doc = new global.Pdf.PdfDoc(PAGE_W, PAGE_H);
@@ -246,8 +220,7 @@
     const right = PAGE_W - MARGIN;
     let y = MARGIN + 5;
 
-    const title = test ? `${test.name} – ${meta.device}` : `EKG-Aufzeichnung – ${meta.device}`;
-    page.text(MARGIN, y, title, { size: 14, bold: true });
+    page.text(MARGIN, y, `EKG-Aufzeichnung – ${meta.device}`, { size: 14, bold: true });
     y += 6;
     const filters = [view.highpass && 'Grundlinie 0,5 Hz', view.notch && '50 Hz'].filter(Boolean).join(', ') || 'keine';
     page.text(MARGIN, y, `${new Date(meta.startTime).toLocaleString('de-DE')} · Dauer ${fmtDuration(meta.duration)} · ` +
@@ -259,13 +232,12 @@
       ['SDNN ', true], [`${f0(stats.sdnn)} ms    `, false],
       ['RMSSD ', true], [`${f0(stats.rmssd)} ms    `, false],
       ['pNN50 ', true], [`${f0(stats.pnn50)} %    `, false],
-      ['Schläge ', true], [`${stats.beats} (${stats.artifacts} Artefakte)    `, false]
-    ] : [['Keine RR-Daten    ', false]];
-    if (resp && resp.rate) runs.push(['Atemfrequenz ', true], [`${resp.rate.toFixed(1).replace('.', ',')} /min`, false]);
+      ['Schläge ', true], [`${stats.beats} (${stats.artifacts} Artefakte)`, false]
+    ] : [['Keine RR-Daten', false]];
     page.runs(MARGIN, y, runs, { size: 9 });
     y += 4.5;
 
-    // Erweiterte HRV und Lage in einer Zeile
+    // Erweiterte HRV in einer Zeile
     if (hrvx) {
       const { freq, pc, si, dfa } = hrvx;
       const d2 = v => (v == null ? '–' : v.toFixed(2).replace('.', ','));
@@ -274,17 +246,10 @@
       else if (freq) x.push(['HF ', true], [`${Math.round(freq.hf)} ms²    `, false]);
       if (pc) x.push(['SD1/SD2 ', true], [`${f0(pc.sd1)}/${f0(pc.sd2)} ms    `, false]);
       if (si != null) x.push(['Stress-Index ', true], [`${si.toFixed(1).replace('.', ',')}    `, false]);
-      if (dfa && dfa.a1 != null) x.push(['DFA α1 ', true], [`${d2(dfa.a1)}    `, false]);
-      if (post) x.push(['Lage ', true], [`${post.main} · Bewegung ${f0(post.motion)} %`, false]);
+      if (dfa && dfa.a1 != null) x.push(['DFA α1 ', true], [d2(dfa.a1), false]);
       if (x.length) { page.runs(MARGIN, y, x, { size: 9 }); y += 4.5; }
     }
     y += 2.5;
-
-    // Ergebnis eines geführten Tests
-    if (test) {
-      y = drawFindings(page, MARGIN, y, right - MARGIN, `Ergebnis: ${test.name}`, test.level, test.findings || [], test.rows || []);
-      y += 3;
-    }
 
     // Automatische Auswertung: Text links, Durchschnittsschlag rechts
     if (ana) {
@@ -292,13 +257,13 @@
       let beatBox = { width: 0, height: 0 };
       if (ana.times) beatBox = drawBeat(page, right - Math.ceil(ana.times.y.length / fs * 50), top, ana.times, fs, ana.avgCount);
       const textW = right - MARGIN - (beatBox.width ? beatBox.width + 8 : 0);
-      y = drawFindings(page, MARGIN, y, textW, `Automatische Auswertung: ${ana.headline}`, ana.level, ana.findings, null);
+      y = drawFindings(page, MARGIN, y, textW, `Automatische Auswertung: ${ana.headline}`, ana.level, ana.findings);
       y += 1;
       const t = ana.times;
       page.runs(MARGIN, y, [
         ['PQ ', true], [`${ms(t && t.pq)} · `, false], ['QRS ', true], [`${ms(t && t.qrs)} · `, false],
         ['QT ', true], [`${ms(t && t.qt)} · `, false],
-        ['QTc ', true], [`${ms(t && t.qtcB)} (Bazett), ${ms(t && t.qtcF)} (Fridericia)`, false]
+        ['QTc ', true], [`${ms(t && t.qtcF)} (Fridericia), ${ms(t && t.qtcB)} (Bazett)`, false]
       ], { size: 9 });
       y += 4.5;
       const note = 'Markierungen im EKG: S supraventrikulärer, V ventrikulärer Extraschlag (wahrscheinlich), ' +
@@ -337,5 +302,5 @@
     return blob;
   }
 
-  global.EkgExport = { ecgCsv, rrCsv, rrTxt, respCsv, pdfReport, fmtDuration, IS_IOS };
+  global.EkgExport = { ecgCsv, rrCsv, rrTxt, pdfReport, fmtDuration, IS_IOS };
 })(window);

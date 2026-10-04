@@ -1,8 +1,7 @@
 /* Erweiterte HRV aus RR-Intervallen:
- *  - Frequenzbereich (Welch-Spektrum, 4 Hz interpoliert): VLF, LF, HF, LF/HF
+ *  - Frequenzbereich (Welch-Spektrum, 4 Hz interpoliert): LF, HF, LF/HF
  *  - Poincaré (SD1, SD2), Stress-Index nach Baevsky (Wurzel, wie Kubios)
- *  - DFA α1 (4–16 Schläge) und α2 (16–64 Schläge)
- *  - Kohärenz (Anteil der Leistung um die dominante Frequenz) für das Biofeedback */
+ *  - DFA α1 (4–16 Schläge) und α2 (16–64 Schläge) */
 (function (global) {
   'use strict';
 
@@ -130,11 +129,12 @@
     const x = resample(t, nn, RESAMPLE_HZ);
     const spec = welch(x, RESAMPLE_HZ, 256);   // 64-s-Fenster
     const lf = bandPower(spec, ...BANDS.lf), hf = bandPower(spec, ...BANDS.hf);
-    const vlf = duration >= 240 ? bandPower(spec, ...BANDS.vlf) : null;
+    // Kein VLF: laut Task Force (1996) aus Messungen ≤ 5 min „fragwürdig, zu vermeiden“.
+    // LF braucht mindestens 2 min, HF mindestens 1 min.
     return {
       spec, duration,
-      vlf, lf, hf,
-      total: (vlf || 0) + lf + hf,
+      lf, hf,
+      total: lf + hf,
       lfhf: hf > 0 ? lf / hf : null,
       lfnu: 100 * lf / (lf + hf), hfnu: 100 * hf / (lf + hf),
       lfPeak: peakIn(spec, ...BANDS.lf), hfPeak: peakIn(spec, ...BANDS.hf),
@@ -220,21 +220,5 @@
     return { code: 'z3', text: 'über anaerober Schwelle' };
   }
 
-  /* ---------- Kohärenz (Biofeedback) ---------- */
-  // rrWin: [{ t (s), rr (ms) }] der letzten ~64 s
-  function coherence(rrWin) {
-    if (rrWin.length < 20) return null;
-    const t = rrWin.map(p => p.t), v = rrWin.map(p => p.rr);
-    const valid = global.Hrv.validateRR(v);
-    const tt = t.filter((_, i) => valid[i]), vv = v.filter((_, i) => valid[i]);
-    if (vv.length < 20 || tt[tt.length - 1] - tt[0] < 30) return null;
-    const x = resample(tt, vv, RESAMPLE_HZ);
-    const spec = welch(x, RESAMPLE_HZ, x.length);   // ein Fenster über den ganzen Abschnitt
-    const pk = peakIn(spec, 0.04, 0.26);
-    const total = bandPower(spec, 0.0033, 0.4);
-    const peakPow = bandPower(spec, pk - 0.015, pk + 0.015);
-    return { score: total > 0 ? 100 * peakPow / total : 0, peakHz: pk, perMin: pk * 60 };
-  }
-
-  global.HrvX = { frequency, poincare, stressIndex, dfaOf, dfa, dfaZone, coherence, cleanSeries, BANDS };
+  global.HrvX = { frequency, poincare, stressIndex, dfaOf, dfa, dfaZone, cleanSeries, BANDS };
 })(window);

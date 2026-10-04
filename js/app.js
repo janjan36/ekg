@@ -1,4 +1,4 @@
-/* Steuerung der Oberfläche: Reiter, Verbindung, Live-Anzeige, Aufnahme, geführte Tests,
+/* Steuerung der Oberfläche: Reiter, Verbindung, Live-Anzeige, Aufnahme,
  * Aufnahmeliste, Detailansicht und Verlauf. */
 (function () {
   'use strict';
@@ -12,8 +12,7 @@
   const SETTINGS_KEY = 'polar-ekg-settings';
   const settings = Object.assign({
     speed: 25, gain: 10, highpass: true, notch: true,
-    pxPerMm: EcgCharts.DEFAULT_PX_PER_MM, csv: 'de', duration: 300,
-    upright: null, uprightDate: null, age: null, resonanceRate: null, bfMinutes: 5
+    pxPerMm: EcgCharts.DEFAULT_PX_PER_MM, csv: 'de', duration: 300
   }, (() => {
     try { return JSON.parse(localStorage.getItem(SETTINGS_KEY)) || {}; } catch (_) { return {}; }
   })());
@@ -28,9 +27,6 @@
   let connected = false;
   let liveFilter = new EkgFilters.FilterChain(FS, settings);
   let liveBeats = [];       // { t: Wanduhr in s, rr } der letzten 3 min
-  let liveResp = null;      // Resp.LiveRespiration
-  let posture = null;       // Posture.PostureTracker
-  let accShownAt = 0;
   let dfaShownAt = 0;
   const LIVE_ANALYSIS_S = 30;
   let liveRaw = [];         // Rohdaten der letzten 30 s für die Live-Auswertung
@@ -47,10 +43,7 @@
   const live = new EcgCharts.LiveEcgChart($('liveCanvas'), FS);
   const review = new EcgCharts.ReviewEcgChart($('reviewScroll'), $('reviewInner'), $('reviewCanvas'), FS);
   const tacho = new EcgCharts.Tachogram($('tachoCanvas'), t => review.scrollToTime(t));
-  const respLive = new EcgCharts.RespChart($('respLiveCanvas'));
-  const respReview = new EcgCharts.RespChart($('respReviewCanvas'), t => review.scrollToTime(t));
-  review.onView = (t0, t1) => { tacho.setView(t0, t1); respReview.setView(t0, t1); };
-  respLive.setData({}, 30, 'Warte auf Atemdaten …');
+  review.onView = (t0, t1) => tacho.setView(t0, t1);
   const beatChart = new EcgCharts.MedianBeatChart($('beatCanvas'));
   beatChart.onLegend = text => {
     if (current && current.analysis) {
@@ -59,7 +52,6 @@
   };
   const psdChart = new Charts2.PsdChart($('psdCanvas'));
   const poincareChart = new Charts2.PoincareChart($('poincareCanvas'));
-  const testChart = new Charts2.EventHrChart($('testChart'));
 
   /* ---------- Reiter ---------- */
   function showTab(name) {
@@ -84,24 +76,17 @@
     $('btnDemo').hidden = connected;
     $('btnDisconnect').hidden = !connected;
     $('btnConnect').disabled = !PolarH10Source.isSupported();
-    $('btnRecord').disabled = !connected || (rec && rec.test);
+    $('btnRecord').disabled = !connected;
     $('btnRecord').classList.toggle('active', !!rec);
     $('btnRecordLabel').textContent = rec ? 'Aufnahme beenden' : 'Aufnahme starten';
     $('selDuration').disabled = !!rec;
-    $('btnCalibPosture').disabled = !connected || !posture;
-    document.querySelectorAll('[data-test]').forEach(b => { b.disabled = !!rec; });
   }
 
   function resetLiveValues() {
-    ['valHr', 'valRr', 'valRmssd', 'valResp', 'valDfa', 'valPosture'].forEach(id => { $(id).textContent = '–'; });
+    ['valHr', 'valRr', 'valRmssd', 'valDfa'].forEach(id => { $(id).textContent = '–'; });
     $('valSignal').textContent = 'ms';
-    $('valRespUnit').textContent = '/min';
     $('valDfaZone').textContent = ' ';
-    $('valMotion').textContent = ' ';
-    liveResp = null;
-    posture = null;
     liveBeats = [];
-    respLive.setData({}, 30, 'Warte auf Atemdaten …');
     $('battery').hidden = true;
     $('contact').hidden = true;
     resetLiveAnalysis();
@@ -145,9 +130,14 @@
     if (liveMarkers.length > 200) liveMarkers.splice(0, liveMarkers.length - 200);
     live.setMarkers(liveMarkers);
 
+    // Vorhofflimmer-Muster nur aus den letzten 2 min RR-Daten des Gurts (≥ 100 Schläge) beurteilen –
+    // das 30-s-Fenster ist dafür zu kurz
+    const now = Date.now() / 1000;
+    const rr2 = liveBeats.filter(b => now - b.t <= 120).map(b => b.rr);
+    const irr = rr2.length >= EkgAnalysis.AF_MIN_BEATS ? EkgAnalysis.irregularity(rr2) : null;
     const rh = $('liveRhythm');
-    rh.textContent = res.rhythm.af ? 'unregelmäßig (VHF-Muster?)' : LIVE_RHYTHM[res.rhythm.label.code];
-    rh.dataset.level = res.rhythm.af ? 'warn' : '';
+    rh.textContent = irr && irr.af ? 'unregelmäßig (VHF-Muster?)' : LIVE_RHYTHM[res.rhythm.label.code];
+    rh.dataset.level = irr && irr.af ? 'warn' : '';
     const ect = liveCounts.S + liveCounts.V;
     $('liveEctopic').textContent = ect ? `${liveCounts.S} × S · ${liveCounts.V} × V` : 'keine';
     $('liveEctopic').dataset.level = ect ? 'info' : '';
@@ -155,8 +145,8 @@
     $('liveQuality').textContent = pct >= 90 ? `gut (${pct} %)` : `gestört (${pct} % auswertbar)`;
     $('liveQuality').dataset.level = pct >= 90 ? '' : pct >= 60 ? 'info' : 'warn';
     const t = res.times;
-    $('liveTimes').textContent = t && (t.qrs || t.qtcB)
-      ? `${t.qrs ? Math.round(t.qrs) + ' ms' : '–'} · ${t.qtcB ? Math.round(t.qtcB) + ' ms' : '–'}`
+    $('liveTimes').textContent = t && (t.qrs || t.qtcF)
+      ? `${t.qrs ? Math.round(t.qrs) + ' ms' : '–'} · ${t.qtcF ? Math.round(t.qtcF) + ' ms' : '–'}`
       : '–';
   }
 
@@ -165,11 +155,15 @@
     const now = Date.now() / 1000;
     if (now - dfaShownAt < 5) return;
     dfaShownAt = now;
-    const win = liveBeats.filter(b => now - b.t <= 120).map(b => b.rr);
-    const r = win.length >= 60 ? HrvX.dfaOf(win) : null;
+    // Wie in den Validierungsstudien: volles 2-min-Fenster, mindestens 90 Schläge
+    const beats = liveBeats.filter(b => now - b.t <= 120);
+    const span = beats.length ? now - beats[0].t : 0;
+    const ready = span >= 115 && beats.length >= 90;
+    const r = ready ? HrvX.dfaOf(beats.map(b => b.rr)) : null;
     const zone = r && HrvX.dfaZone(r.a1);
     $('valDfa').textContent = r && r.a1 != null ? de(r.a1, 2) : '–';
-    $('valDfaZone').textContent = zone ? zone.text : (win.length ? `ab 60 Schlägen (${win.length})` : ' ');
+    $('valDfaZone').textContent = zone ? zone.text
+      : (beats.length ? `ab 2 min (noch ${Math.max(0, Math.ceil(120 - span))} s)` : ' ');
   }
 
   /* ---------- Handler für Gurt bzw. Demo ---------- */
@@ -186,29 +180,7 @@
         rec.lost += info.lost || 0;
         const room = rec.maxSamples - rec.ecg.length;
         for (let i = 0; i < Math.min(room, samples.length); i++) rec.ecg.push(samples[i]);
-        if (rec.ecg.length >= rec.maxSamples && !rec.test) stopRecording();
-      }
-    },
-
-    onAcc(xyz, info) {
-      if (!liveResp || liveResp.accFs !== info.fs) liveResp = new Resp.LiveRespiration(info.fs);
-      if (!posture || posture.fs !== info.fs) { posture = new Posture.PostureTracker(info.fs); updateButtons(); }
-      liveResp.push(xyz);
-      posture.push(xyz);
-      if (rec) {
-        rec.accFs = info.fs;
-        for (let i = 0; i < xyz.length; i++) rec.acc.push(xyz[i]);
-      }
-      const now = Date.now();
-      if (now - accShownAt < 500) return;
-      accShownAt = now;
-      const r = liveResp.result();
-      respLive.setData(r, 30, 'Atemkurve erscheint nach einigen Sekunden …');
-      $('valResp').textContent = r.rate ? Math.round(r.rate) : '–';
-      const ps = posture.state(settings.upright);
-      if (ps) {
-        $('valPosture').textContent = ps.posture;
-        $('valMotion').textContent = ps.motion;
+        if (rec.ecg.length >= rec.maxSamples) stopRecording();
       }
     },
 
@@ -256,7 +228,6 @@
         updateButtons();
         return;
       }
-      runner.abort();
       if (rec) await stopRecording({ reason: manual ? '' : 'Verbindung unterbrochen' });
       clearInterval(analysisTimer);
       source = null;
@@ -286,10 +257,6 @@
       setStatus(`Verbunden: ${source.name}`, 'connected');
       clearInterval(analysisTimer);
       analysisTimer = setInterval(runLiveAnalysis, 2000);
-      if (!source.accFs) {
-        $('valRespUnit').textContent = 'kein Sensor';
-        respLive.setData({}, 30, 'Beschleunigungssensor nicht verfügbar – keine Atemfrequenz');
-      }
     } catch (err) {
       console.error(err);
       source = null;
@@ -308,24 +275,19 @@
   }
 
   /* ---------- Aufnahme ---------- */
-  // opts: { maxSeconds, test: { type, params, age } } – ohne opts gilt die gewählte Dauer
-  function startRecording(opts = {}) {
-    if (!connected || rec) return false;
+  function startRecording() {
+    if (!connected || rec) return;
     rec = {
       startTime: Date.now(),
       device: source.name,
-      maxSamples: (opts.maxSeconds || settings.duration) * FS,
-      ecg: [], rr: [], rrT: [], rrElapsed: 0, lost: 0,
-      acc: [], accFs: null,
-      test: opts.test || null,
-      events: []
+      maxSamples: settings.duration * FS,
+      ecg: [], rr: [], rrT: [], rrElapsed: 0, lost: 0
     };
     if (navigator.wakeLock) navigator.wakeLock.request('screen').then(w => { wakeLock = w; }).catch(() => {});
     timerHandle = setInterval(updateTimer, 250);
     updateTimer();
-    setStatus(rec.test ? `${Tests.NAMES[rec.test.type]} läuft` : 'Aufnahme läuft', 'recording');
+    setStatus('Aufnahme läuft', 'recording');
     updateButtons();
-    return true;
   }
 
   const recTime = () => (rec ? rec.ecg.length / FS : 0);
@@ -341,7 +303,7 @@
     return `${String(Math.floor(t / 60)).padStart(2, '0')}:${String(t % 60).padStart(2, '0')}`;
   }
 
-  // opts: { reason, discard }
+  // opts: { reason }
   async function stopRecording(opts = {}) {
     if (!rec) return;
     const r = rec;
@@ -351,7 +313,6 @@
     $('timer').textContent = fmtClock(r.ecg.length / FS);
     if (connected) setStatus(`Verbunden: ${r.device}`, 'connected');
     updateButtons();
-    if (opts.discard) { setStatus(connected ? 'Test abgebrochen' : 'Nicht verbunden', connected ? 'connected' : 'idle'); return; }
 
     const duration = r.ecg.length / FS;
     if (duration < MIN_SAVE_SECONDS) {
@@ -360,36 +321,20 @@
     }
     setStatus('Speichern und auswerten …', 'busy');
     const stats = Hrv.compute(r.rr);
-    const acc = Int16Array.from(r.acc);
     const ecg = Int32Array.from(r.ecg);
-    const data = {
-      fs: FS, ecg, rr: Float32Array.from(r.rr), rrT: Float32Array.from(r.rrT),
-      acc, accFs: r.accFs
-    };
-    const ana = EkgAnalysis.analyze(ecg, FS);
-    const resp = Resp.analyze(acc, r.accFs);
+    const data = { fs: FS, ecg, rr: Float32Array.from(r.rr), rrT: Float32Array.from(r.rrT) };
+    const ana = EkgAnalysis.analyze(ecg, FS, { ref: { rr: data.rr, rrT: data.rrT } });
     const meta = {
       startTime: r.startTime,
       duration,
       device: r.device,
       meanHR: stats ? stats.meanHR : null,
       rmssd: stats ? stats.rmssd : null,
-      respRate: resp ? resp.rate : null,
       analysis: ana ? { level: ana.level, ectopic: ana.counts.S + ana.counts.V } : null,
       lost: r.lost,
       note: opts.reason || (r.interrupted ? 'Verbindung kurz unterbrochen' : '')
     };
-    if (r.test) {
-      meta.test = { ...r.test, events: r.events };
-      const res = Tests.evaluate(r.test.type, { ana, events: r.events, params: r.test.params, age: r.test.age });
-      if (res) { meta.test.key = res.key || {}; meta.test.level = res.level; }
-      if (res && res.key && res.key.resonanceRate) {
-        settings.resonanceRate = res.key.resonanceRate;
-        saveSettings();
-        applyResonanceHint();
-      }
-    }
-    meta.metrics = Trends.computeMetrics({ meta, data }, { ana, resp, upright: settings.upright });
+    meta.metrics = Trends.computeMetrics({ meta, data }, { ana });
     const id = await store.save(meta, data);
     if (connected) setStatus(`Verbunden: ${r.device}`, 'connected'); else setStatus('Nicht verbunden', 'idle');
     await renderList();
@@ -406,7 +351,6 @@
       const li = document.createElement('li');
       const hr = m.meanHR ? `Ø ${Math.round(m.meanHR)} /min` : 'keine HF';
       const rmssd = m.rmssd != null ? ` · RMSSD ${Math.round(m.rmssd)} ms` : '';
-      const af = m.respRate ? ` · AF ${Math.round(m.respRate)} /min` : '';
       const es = m.analysis && m.analysis.ectopic ? ` · ${m.analysis.ectopic} Extraschl.` : '';
       li.innerHTML = `
         <div class="rec-main">
@@ -420,14 +364,8 @@
       const dot = li.querySelector('.level-dot');
       if (m.analysis) dot.dataset.level = m.analysis.level; else dot.remove();
       li.querySelector('.rec-date').append(new Date(m.startTime).toLocaleString('de-DE'));
-      if (m.test) {
-        const tag = document.createElement('span');
-        tag.className = 'test-tag';
-        tag.textContent = Tests.NAMES[m.test.type];
-        li.querySelector('.rec-date').append(tag);
-      }
       li.querySelector('.rec-meta').textContent =
-        `${EkgExport.fmtDuration(m.duration)} · ${hr}${rmssd}${af}${es}${m.note ? ' · ' + m.note : ''}`;
+        `${EkgExport.fmtDuration(m.duration)} · ${hr}${rmssd}${es}${m.note ? ' · ' + m.note : ''}`;
       li.querySelector('[data-act="open"]').onclick = () => openRecording(m.id);
       li.querySelector('[data-act="del"]').onclick = async () => {
         if (!confirm('Diese Aufnahme wirklich löschen?')) return;
@@ -444,27 +382,21 @@
     const r = await store.get(id);
     if (!r) return;
     const { data, meta } = r;
-    const analysis = EkgAnalysis.analyze(data.ecg, data.fs);
+    const analysis = EkgAnalysis.analyze(data.ecg, data.fs, { ref: { rr: data.rr, rrT: data.rrT } });
     current = {
       ...r,
       stats: Hrv.compute(Array.from(data.rr)),
-      resp: Resp.analyze(data.acc, data.accFs),
       analysis,
-      posture: Posture.analyze(data.acc, data.accFs, settings.upright),
       hrvx: {
         freq: HrvX.frequency(data.rr, data.rrT),
         pc: HrvX.poincare(data.rr),
         si: HrvX.stressIndex(data.rr),
         dfa: HrvX.dfaOf(data.rr)
-      },
-      test: meta.test ? Tests.evaluate(meta.test.type, {
-        ana: analysis, events: meta.test.events || [], params: meta.test.params, age: meta.test.age
-      }) : null
+      }
     };
-    $('reviewTitle').textContent = `${meta.test ? Tests.NAMES[meta.test.type] : 'Aufnahme'} vom ${new Date(meta.startTime).toLocaleString('de-DE')}`;
+    $('reviewTitle').textContent = `Aufnahme vom ${new Date(meta.startTime).toLocaleString('de-DE')}`;
     $('reviewNote').value = meta.note || '';
     showTab('aufnahmen');
-    renderTest();
     renderStats();
     renderAnalysis();
     renderHrvx();
@@ -478,8 +410,6 @@
     review.setScale({ speed: settings.speed, gain: settings.gain, pxPerMm: settings.pxPerMm });
     review.setData(EkgFilters.filtfilt(data.ecg, data.fs, settings));
     tacho.setData(Array.from(data.rrT), Array.from(data.rr), stats ? stats.valid : [], meta.duration);
-    respReview.setData(current.resp || {}, meta.duration, 'Keine Atemdaten in dieser Aufnahme');
-    $('btnCsvResp').disabled = !current.resp;
     const a = current.analysis;
     review.setAnnotations(a ? {
       beats: a.beats.filter(b => 'SVA'.includes(b.type)),
@@ -508,23 +438,6 @@
     }
   }
 
-  function renderTest() {
-    const t = current.test;
-    $('testBox').hidden = !t;
-    if (!t) return;
-    $('testDot').dataset.level = t.level || 'info';
-    $('testHeadline').textContent = `Ergebnis: ${t.name}`;
-    fillFindings($('testFindings'), t.findings || []);
-    fillDl($('testRows'), t.rows || []);
-    const ch = t.chart;
-    $('testChartLabel').hidden = !ch;
-    $('testChart').parentElement.hidden = !ch;
-    if (ch) {
-      const pts = ch.beats.filter(b => b.ok).map(b => ({ t: b.t, hr: b.hr }));
-      testChart.setData(pts, ch.marks || [], [0, current.meta.duration]);
-    }
-  }
-
   const QUALITY_NAMES = { flat: 'kein Signal', motion: 'Bewegung', noise: 'Störung' };
 
   function renderAnalysis() {
@@ -543,8 +456,8 @@
       ['PQ (120–200)', ms(t && t.pq)],
       ['QRS (< 120)', ms(t && t.qrs)],
       ['QT', ms(t && t.qt)],
-      ['QTc Bazett (< 460)', ms(t && t.qtcB)],
-      ['QTc Fridericia', ms(t && t.qtcF)],
+      ['QTc Fridericia (♂ < 450 / ♀ < 460)', ms(t && t.qtcF)],
+      ['QTc Bazett (Vergleich)', ms(t && t.qtcB)],
       ['RR (Median)', ms(a.rhythm.medianRR)],
       ['R / S-Amplitude', t ? `${mv(t.amps.r)} / ${mv(t.amps.s)} mV` : '–'],
       ['P / T-Amplitude', t ? `${mv(t.amps.p)} / ${mv(t.amps.t)} mV` : '–']
@@ -579,7 +492,6 @@
       ['HF', freq ? `${Math.round(freq.hf)} ms²` : '–'],
       ['LF/HF', freq && freq.lfReliable ? de(freq.lfhf, 2) : '–'],
       ['LF n.u. / HF n.u.', freq && freq.lfReliable ? `${de(freq.lfnu)} / ${de(freq.hfnu)}` : '–'],
-      ['VLF', freq && freq.vlf != null ? `${Math.round(freq.vlf)} ms²` : '–'],
       ['HF-Gipfel', freq && freq.hfPeak ? `${de(freq.hfPeak, 2)} Hz` : '–'],
       ['SD1 / SD2', pc ? `${de(pc.sd1)} / ${de(pc.sd2)} ms` : '–'],
       ['Stress-Index (√SI)', de(si, 1)],
@@ -590,10 +502,10 @@
     poincareChart.setData(pc);
 
     const notes = [];
-    if (!freq) notes.push({ level: 'info', text: 'Frequenzanalyse ab 1 Minute sauberer Daten; LF und LF/HF erst ab 2 Minuten, VLF ab 4 Minuten.' });
+    if (!freq) notes.push({ level: 'info', text: 'Frequenzanalyse ab 1 Minute sauberer Daten; LF und LF/HF erst ab 2 Minuten (Task Force 1996). Für Vergleiche untereinander 5 Minuten empfohlen.' });
     else if (!freq.lfReliable) notes.push({ level: 'info', text: 'Aufnahme unter 2 Minuten – LF und LF/HF sind noch nicht aussagekräftig.' });
-    if (freq && current.resp && current.resp.rate && current.resp.rate < 9) {
-      notes.push({ level: 'info', text: `Langsame Atmung (${de(current.resp.rate, 1)} /min): Die atemabhängige Schwankung liegt dann im LF-Band – LF/HF ist nicht als „Stress“ zu deuten.` });
+    if (freq && freq.lfReliable) {
+      notes.push({ level: 'info', text: 'LF/HF hängt stark von der Atmung ab: Bei langsamer Atmung (unter ca. 9 Atemzügen/min) liegt die Atemschwankung im LF-Band. Als „Stressbalance“ ist LF/HF wissenschaftlich umstritten.' });
     }
     if (dfa.a1 != null) {
       notes.push({ level: 'ok', text: `DFA α1 ${de(dfa.a1, 2)} – bei Belastung: ${zone.text}. In Ruhe sind Werte um 1 normal; die Schwellen (0,75 / 0,5) gelten nur bei Ausdauerbelastung.` });
@@ -603,7 +515,7 @@
   }
 
   function renderStats() {
-    const { meta, stats, resp, posture: post } = current;
+    const { meta, stats } = current;
     const f = (v, d = 0) => (v == null ? '–' : v.toFixed(d).replace('.', ','));
     const rows = [
       ['Dauer', EkgExport.fmtDuration(meta.duration)],
@@ -613,10 +525,6 @@
       ['RMSSD', stats ? `${f(stats.rmssd)} ms` : '–'],
       ['pNN50', stats ? `${f(stats.pnn50, 1)} %` : '–'],
       ['Schläge / Artefakte', stats ? `${stats.beats} / ${stats.artifacts}` : '–'],
-      ['Atemfrequenz', resp && resp.rate ? `${f(resp.rate, 1)} /min` : '–'],
-      ['Atemzüge', resp ? String(resp.breaths) : '–'],
-      ['Lage', post ? `${post.main} (${f(post.postures[post.main])} %)` : '–'],
-      ['Bewegung', post ? `${f(post.motion)} % der Zeit` : '–'],
       ['Gerät', meta.device]
     ];
     if (meta.lost) rows.push(['Verlorene Werte', String(meta.lost)]);
@@ -638,31 +546,6 @@
     $('calibBar').style.width = (50 * settings.pxPerMm) + 'px';
   }
 
-  function applyPostureState() {
-    $('postureCalibState').textContent = settings.upright
-      ? `kalibriert am ${new Date(settings.uprightDate).toLocaleDateString('de-DE')}`
-      : 'nicht kalibriert';
-  }
-
-  function applyResonanceHint() {
-    if (!settings.resonanceRate) return;
-    $('selBfRate').value = String(settings.resonanceRate);
-    $('bfResonanceHint').textContent = `Deine gemessene Resonanzfrequenz: ${Tests.fmtRate(settings.resonanceRate)} /min`;
-  }
-
-  /* ---------- Tests ---------- */
-  const runner = new TestRunner({
-    isConnected: () => connected,
-    source: () => source,
-    startRecording,
-    stopRecording,
-    recTime,
-    addEvent: ev => { if (rec) rec.events.push({ id: ev.id, value: ev.value, t: ev.t != null ? ev.t : recTime() }); },
-    gravity: () => (posture ? posture.gravity : null),
-    postureState: () => (posture ? posture.state(settings.upright) : null),
-    liveBeats: () => liveBeats
-  });
-
   let trendView = null;
 
   function bindControls() {
@@ -673,10 +556,6 @@
     $('rngScale').value = settings.pxPerMm;
     $('selCsv').value = settings.csv;
     $('selDuration').value = settings.duration;
-    if (settings.age) $('inpAge').value = settings.age;
-    $('selBfMin').value = String(settings.bfMinutes);
-    applyResonanceHint();
-    applyPostureState();
 
     document.querySelectorAll('.tabs [data-tab]').forEach(b => { b.onclick = () => showTab(b.dataset.tab); });
 
@@ -685,8 +564,6 @@
     $('rngScale').oninput = e => { settings.pxPerMm = +e.target.value; saveSettings(); applyView(); };
     $('selCsv').onchange = e => { settings.csv = e.target.value; saveSettings(); };
     $('selDuration').onchange = e => { settings.duration = +e.target.value; saveSettings(); };
-    $('inpAge').onchange = e => { settings.age = +e.target.value || null; saveSettings(); };
-    $('selBfMin').onchange = e => { settings.bfMinutes = +e.target.value; saveSettings(); };
     const onFilter = () => {
       settings.highpass = $('chkHp').checked;
       settings.notch = $('chkNotch').checked;
@@ -702,46 +579,13 @@
     $('chkHp').onchange = onFilter;
     $('chkNotch').onchange = onFilter;
 
-    $('btnCalibPosture').onclick = () => {
-      const g = posture && posture.gravity;
-      if (!g) return;
-      settings.upright = g;
-      settings.uprightDate = Date.now();
-      saveSettings();
-      applyPostureState();
-    };
-    $('btnResetPosture').onclick = () => {
-      settings.upright = null;
-      settings.uprightDate = null;
-      saveSettings();
-      applyPostureState();
-    };
-
     $('btnConnect').onclick = () => connect(PolarH10Source);
     $('btnDemo').onclick = () => connect(DemoSource);
     $('btnDisconnect').onclick = async () => {
-      runner.abort();
       if (rec) await stopRecording();
       if (source) await source.disconnect();
     };
     $('btnRecord').onclick = () => (rec ? stopRecording() : startRecording());
-
-    document.querySelectorAll('[data-test]').forEach(b => {
-      b.onclick = () => {
-        const type = b.dataset.test;
-        const opts = {};
-        if (type === 'deepBreathing') {
-          settings.age = +$('inpAge').value || null;
-          saveSettings();
-          opts.age = settings.age;
-        }
-        if (type === 'biofeedback') {
-          opts.rate = +$('selBfRate').value;
-          opts.minutes = +$('selBfMin').value;
-        }
-        runner.start(type, opts);
-      };
-    });
 
     $('btnCloseReview').onclick = closeReview;
     $('reviewNote').onchange = async e => {
@@ -753,7 +597,6 @@
     $('btnCsvEcg').onclick = () => current && EkgExport.ecgCsv(current, settings.csv);
     $('btnCsvRr').onclick = () => current && EkgExport.rrCsv(current, settings.csv);
     $('btnTxtRr').onclick = () => current && EkgExport.rrTxt(current);
-    $('btnCsvResp').onclick = () => current && current.resp && EkgExport.respCsv(current, current.resp, settings.csv);
     $('btnPdf').onclick = async () => {
       if (!current) return;
       const btn = $('btnPdf');
@@ -784,7 +627,7 @@
     const opened = await EkgStorage.openStorage();
     store = opened.store;
     $('storageNotice').hidden = opened.persistent;
-    trendView = new Trends.TrendView({ store, onOpen: openRecording, getUpright: () => settings.upright });
+    trendView = new Trends.TrendView({ store, onOpen: openRecording });
     bindControls();
     applyView();
     updateButtons();

@@ -2,7 +2,6 @@
  *
  * Handler-Schnittstelle (identisch zu DemoSource):
  *   onEcg(samplesUv: Int32Array, info: { lost })
- *   onAcc(xyzMg: Int32Array [x0,y0,z0,x1,…], info: { fs })
  *   onHr({ hr, rr: number[] (ms), contact: true|false|null })
  *   onBattery(percent)
  *   onStatus(text)
@@ -17,7 +16,6 @@
 
   const ECG_FS = 130;
   const MEAS_ECG = 0x00;
-  const MEAS_ACC = 0x02;
   const OP_START = 0x02;
   const OP_STOP = 0x03;
   const CONTROL_RESPONSE = 0xf0;
@@ -25,11 +23,6 @@
   // Start ECG: Samplerate (0x00) = 130 Hz, Auflösung (0x01) = 14 bit
   const CMD_START_ECG = [OP_START, MEAS_ECG, 0x00, 0x01, 0x82, 0x00, 0x01, 0x01, 0x0e, 0x00];
   const CMD_STOP_ECG = [OP_STOP, MEAS_ECG];
-  // Start ACC: Samplerate (0x00), Auflösung (0x01) = 16 bit, Messbereich (0x02) = 2 g
-  const cmdStartAcc = fs => [OP_START, MEAS_ACC, 0x00, 0x01, fs & 0xff, fs >> 8,
-    0x01, 0x01, 0x10, 0x00, 0x02, 0x01, 0x02, 0x00];
-  const CMD_STOP_ACC = [OP_STOP, MEAS_ACC];
-  const ACC_RATES = [25, 50, 100, 200];   // niedrigste zuerst – für die Atmung reicht wenig
 
   const PMD_ERRORS = {
     1: 'ungültiger Befehl',
@@ -64,54 +57,6 @@
       samples[i] = v;
     }
     return { timestampNs, frameType, samples };
-  }
-
-  function readSigned(bytes, o, size) {
-    let v = 0;
-    for (let b = 0; b < size; b++) v |= bytes[o + b] << (8 * b);
-    const bits = 8 * size;
-    return bits < 32 && (v & (1 << (bits - 1))) ? v - (1 << bits) : v;
-  }
-
-  // Komprimierter Frame: Referenzwert je Kanal, danach Blöcke
-  // [Bitbreite, Anzahl, Deltas (LSB zuerst, vorzeichenbehaftet)].
-  function decodeDeltaFrame(bytes, offset, channels, refBytes) {
-    let prev = [];
-    for (let c = 0; c < channels; c++) prev.push(readSigned(bytes, offset + c * refBytes, refBytes));
-    offset += channels * refBytes;
-    const out = [...prev];
-    while (offset + 2 <= bytes.length) {
-      const size = bytes[offset], count = bytes[offset + 1];
-      offset += 2;
-      const byteLen = Math.ceil(size * count * channels / 8);
-      if (offset + byteLen > bytes.length) break;
-      let bit = 0;
-      const readBits = () => {
-        let v = 0;
-        for (let b = 0; b < size; b++, bit++) v |= ((bytes[offset + (bit >> 3)] >> (bit & 7)) & 1) << b;
-        return size && (v & (1 << (size - 1))) ? v - (1 << size) : v;
-      };
-      for (let s = 0; s < count; s++) {
-        prev = prev.map(p => p + readBits());
-        out.push(...prev);
-      }
-      offset += byteLen;
-    }
-    return Int32Array.from(out);
-  }
-
-  // ACC-Frame: [0]=0x02, [1..8]=Zeitstempel, [9]=Frame-Typ, danach x,y,z je Sample in mG.
-  function parseAccFrame(dv) {
-    if (dv.byteLength < 10 || dv.getUint8(0) !== MEAS_ACC) return null;
-    const bytes = new Uint8Array(dv.buffer, dv.byteOffset, dv.byteLength);
-    const frameType = dv.getUint8(9);
-    if (frameType & 0x80) return { frameType, xyz: decodeDeltaFrame(bytes, 10, 3, 2) };
-    const size = { 0: 1, 1: 2, 2: 3 }[frameType];
-    if (!size) return { frameType, xyz: new Int32Array(0) };
-    const n = Math.floor((bytes.length - 10) / size);
-    const xyz = new Int32Array(n - (n % 3));
-    for (let i = 0; i < xyz.length; i++) xyz[i] = readSigned(bytes, 10 + i * size, size);
-    return { frameType, xyz };
   }
 
   // Standard Heart Rate Measurement (0x2A37)
@@ -184,7 +129,6 @@
       this._manual = true;
       try {
         if (this.device && this.device.gatt.connected) {
-          if (this.accFs) await Promise.race([this._command(CMD_STOP_ACC), sleep(1000)]);
           await Promise.race([this._command(CMD_STOP_ECG), sleep(1000)]);
         }
       } catch (_) { /* Gurt evtl. schon weg */ }
@@ -248,25 +192,6 @@
       if (resp.error !== 0) {
         throw new Error(`EKG-Start abgelehnt: ${PMD_ERRORS[resp.error] || 'Fehler ' + resp.error}`);
       }
-      await this._startAcc();
-    }
-
-    // Beschleunigungssensor für die Atmung – optional, das EKG läuft auch ohne.
-    async _startAcc() {
-      this.accFs = null;
-      try {
-        for (const fs of ACC_RATES) {
-          let resp = await this._command(cmdStartAcc(fs));
-          if (resp.error === ERR_ALREADY_IN_STATE) {
-            await this._command(CMD_STOP_ACC);
-            resp = await this._command(cmdStartAcc(fs));
-          }
-          if (resp.error === 0) { this.accFs = fs; return; }
-          console.warn(`ACC ${fs} Hz abgelehnt: ${PMD_ERRORS[resp.error] || resp.error}`);
-        }
-      } catch (err) {
-        console.warn('Beschleunigungssensor nicht verfügbar', err);
-      }
     }
 
     _command(bytes) {
@@ -294,16 +219,6 @@
     }
 
     _handleData(dv) {
-      if (dv.getUint8(0) === MEAS_ACC) {
-        const acc = parseAccFrame(dv);
-        if (!this._accLogged) {
-          this._accLogged = true;
-          console.info(`ACC: ${this.accFs} Hz, Frame-Typ 0x${acc.frameType.toString(16)}, ` +
-            `${acc.xyz.length / 3} Werte/Paket, erster Wert`, Array.from(acc.xyz.slice(0, 3)));
-        }
-        if (acc.xyz.length && this.h.onAcc) this.h.onAcc(acc.xyz, { fs: this.accFs });
-        return;
-      }
       const frame = parseEcgFrame(dv);
       if (!frame || !frame.samples.length) return;
       let lost = 0;
@@ -324,6 +239,5 @@
 
   PolarH10Source.parseEcgFrame = parseEcgFrame;
   PolarH10Source.parseHeartRate = parseHeartRate;
-  PolarH10Source.parseAccFrame = parseAccFrame;
   global.PolarH10Source = PolarH10Source;
 })(window);
