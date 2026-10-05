@@ -12,8 +12,8 @@ Sie läuft ohne Installation im Browser (Web Bluetooth).
    `http://localhost:8130/`. Das Fenster offen lassen, solange die App benutzt wird.
 2. Brustgurt anlegen: **Elektroden anfeuchten**, Sender einklicken.
 3. **„Mit Polar H10 verbinden“** → im Dialog „Polar H10 xxxxxxxx“ wählen → „Koppeln“.
-4. Nach ein bis zwei Sekunden läuft das EKG. **„Aufnahme starten“** – die Aufnahme stoppt automatisch
-   nach der gewählten Dauer oder per Klick.
+4. Nach ein bis zwei Sekunden läuft das EKG. **Situation** wählen (Ruhe liegend, Ruhe sitzend, Belastung),
+   dann **„Aufnahme starten“** – die Aufnahme stoppt automatisch nach der gewählten Dauer oder per Klick.
 
 Ohne Gurt ausprobieren: **„Demo“**.
 
@@ -30,29 +30,47 @@ Ohne Gurt ausprobieren: **„Demo“**.
 - **Filter** nur für die Anzeige: Grundlinie (Hochpass 0,5 Hz) und 50-Hz-Netzbrummen. Gespeichert werden immer die Rohdaten.
 - **Herzfrequenz, RR-Intervall, RMSSD** der letzten 60 s, Hautkontakt, Akkustand
 - **Automatische Auswertung** (live für die letzten 30 s, ausführlich für jede Aufnahme und im PDF):
-  - *Signalqualität*: 2-s-Abschnitte ohne Signal, mit Bewegung oder Störung werden grau markiert und nicht ausgewertet
+  - *Signalqualität*: 2-s-Abschnitte ohne Signal, mit Bewegung oder Störung werden grau markiert und nicht ausgewertet.
+    Verlorene Bluetooth-Pakete und Verbindungsabbrüche werden als *Übertragungslücke* eingefügt (nicht überbrückt),
+    damit die Zeitachse stimmt.
   - *Rhythmus*: Herzfrequenz, regelmäßig / atemabhängig schwankend / deutlich unregelmäßig
     (Muster wie bei Vorhofflimmern, Kriterien nach Dash et al. 2009), Pausen über 2 s
   - *Extraschläge*: vorzeitige Schläge mit normaler Form = **S** (supraventrikulär), mit abweichender Form = **V**
     (ventrikulär); im EKG markiert, Liste mit Sprung zur Stelle
-  - *EKG-Zeiten*: PQ, QRS, QT, QTc (Fridericia, Bazett zum Vergleich) und Amplituden am Durchschnittsschlag,
-    mit Bild, Messlinien und Gipfelpunkten P, Q, R, S, T
-  - Alles sind Näherungen aus einer Ableitung mit 130 Hz – **keine Diagnose**. Auffälligkeiten ärztlich abklären lassen.
-  - Der Demo-Gurt enthält absichtlich gelegentliche Extraschläge und alle 45 s eine kurze Störung, um die Auswertung zu zeigen.
+  - *Muster*: Couplets (2 in Folge), Salven (≥ 3 in Folge; ventrikulär = nicht anhaltende Kammertachykardie möglich),
+    Bigeminus/Trigeminus, ausgefallene Schläge (Abstand ≈ doppelt, vom Gurt bestätigt – Hinweis auf SA-/AV-Block II°),
+    plötzliches Herzrasen (Sprung um > 30/min auf > 150/min innerhalb eines Schlags)
+  - *Hinweise*: regelmäßig um 150/min in Ruhe (auch Vorhofflattern möglich), schnell mit breitem QRS
+    (Kammertachykardie möglich), sehr langsam mit breitem QRS (AV-Block III° möglich)
+  - *EKG-Zeiten*: PQ, QRS, QT, QTc (Fridericia, Bazett zum Vergleich) und Amplituden am Durchschnittsschlag
+    (nur Schläge mit ähnlichem Abstand), mit Bild, Messlinien und Gipfelpunkten P, Q, R, S, T
+  - Alles sind Näherungen aus einer Ableitung mit 130 Hz – **keine Diagnose**. Bei Auffälligkeiten rät die App,
+    den PDF-Streifen ärztlich befunden zu lassen (nach ESC-Leitlinie 2024 reicht dafür ein ≥ 30-s-Einkanal-EKG).
+    Eine pauschale Entwarnung gibt es nicht: ohne Befund heißt es „Keine Auffälligkeiten erkannt (automatisch)“.
+  - **Nicht erkennbar** sind Herzinfarkt und Durchblutungsstörungen (ST-Strecke), Lagetyp, Hypertrophie,
+    Schenkelblock-Typ und Schrittmacherfunktion. Bei Herzschrittmacher ist die Auswertung unzuverlässig.
+  - Der Demo-Gurt enthält absichtlich gelegentliche Extraschläge, alle 45 s eine kurze Störung und etwa alle 95 s
+    ein verlorenes Datenpaket, um die Auswertung zu zeigen.
 - **Erweiterte HRV** (je Aufnahme und im PDF): Frequenzspektrum mit LF, HF, LF/HF,
   Poincaré-Plot (SD1/SD2), Stress-Index nach Baevsky (√SI, wie Kubios), DFA α1/α2.
   LF und LF/HF erst ab 2 min aussagekräftig (Task Force), für Vergleiche 5 min. Kein VLF (aus Kurzzeitmessungen
   laut Task Force zu vermeiden). LF/HF hängt stark von der Atmung ab und ist als „Stressbalance“ umstritten.
-- **DFA α1 live** (volles 2-min-Fenster, ≥ 90 Schläge) fürs Training: > 0,75 unter der aeroben Schwelle, 0,75–0,5 dazwischen,
-  < 0,5 über der anaeroben Schwelle (gilt nur bei Ausdauerbelastung).
-- **Verlauf** (Reiter „Verlauf“): Herzfrequenz, RMSSD, QTc, LF/HF und Stress-Index über alle Aufnahmen, mit
-  persönlichem Normalbereich (Mittelwert ± 1 SD ab 5 Aufnahmen); auch als Tabelle. Demo-Aufnahmen zählen nicht mit.
-- **Aufnahmen** (30 s bis 10 min) werden im Browser gespeichert; Detailansicht mit Scrollen und HF-Verlauf
-- **HRV** der Aufnahme: Ø/Min/Max-HF, SDNN, RMSSD, pNN50, Artefaktzahl
-  (RR-Intervalle außerhalb 300–2000 ms oder > 20 % Abweichung vom lokalen Median gelten als Artefakt)
-- **Export**: EKG als CSV (Zeit, µV), RR als CSV, RR als TXT (für Kubios HRV) und
-  **PDF-Bericht** (A4 quer, maßstabsgetreue Vektorgrafik, mit Auswertung). Unter Windows als Download,
-  auf dem iPhone über das Teilen-Menü (in „Dateien“ sichern, Mail, AirDrop …).
+  Bei unregelmäßigem Rhythmus (Vorhofflimmer-Muster) werden keine HRV-Werte berechnet.
+- **DFA α1 live** (volles 2-min-Fenster, ≥ 90 Schläge) mit Artefaktanteil. Ab 5 % korrigierten Intervallen kein Wert
+  (Rogers et al. 2021). Bei Situation „Belastung“: > 0,75 unter der aeroben Schwelle, 0,75–0,5 dazwischen,
+  < 0,5 über der anaeroben Schwelle; in Ruhe sind Werte um 1 üblich.
+- **Verlauf** (Reiter „Verlauf“): Herzfrequenz, RMSSD, QTc, LF/HF und Stress-Index über alle Aufnahmen, filterbar
+  nach Situation, mit persönlichem Normalbereich (Mittelwert ± 1 SD ab 5 Aufnahmen); auch als Tabelle.
+  HRV-Werte erst ab 2 min Aufnahmedauer. Demo-Aufnahmen zählen nicht mit. Liegen Ruhe-Herzfrequenz über und RMSSD
+  unter dem Normalbereich, weist die Aufnahme darauf hin (passt oft zu Infekt, Übertraining, Schlafmangel).
+- **Aufnahmen** (30 s bis 10 min) werden im Browser gespeichert; Detailansicht mit Scrollen, 1-mV-Eichzacke und
+  HF-Verlauf. Die Situation lässt sich dort nachträglich ändern.
+- **HRV** der Aufnahme: Ø/Min/Max-HF, SDNN, RMSSD, pNN50 und Anteil korrigierter Intervalle.
+  Artefaktkorrektur nach Lipponen & Tarvainen (2019) wie in Kubios: Extraschläge, zu lange/kurze, fehlende und
+  zusätzliche Schläge werden erkannt und für die HRV ersetzt (NN- statt RR-Intervalle).
+- **Export**: EKG als CSV (Zeit, µV), RR als CSV, RR als TXT (unkorrigiert, für Kubios HRV) und
+  **PDF-Bericht** (A4 quer, maßstabsgetreue Vektorgrafik mit Eichzacke, Abtastrate, Filtern und Auswertung).
+  Unter Windows als Download, auf dem iPhone über das Teilen-Menü (in „Dateien“ sichern, Mail, AirDrop …).
 
 ## Wichtig zu den gespeicherten Aufnahmen
 Die Aufnahmen liegen im Browser-Speicher des jeweiligen Geräts und der jeweiligen Adresse
@@ -85,12 +103,15 @@ Tipps:
 | Verlässlichkeit | Werte |
 |---|---|
 | **Gut** (RR-Intervalle des H10, validiert) | Herzfrequenz, RR, RMSSD, DFA α1 bei Ausdauerbelastung |
-| **Eingeschränkt** | HF/LF-Leistung (stark atemabhängig), LF/HF (als „Stressbalance“ umstritten), SDNN (dauerabhängig), Extraschläge (S/V nur über die Form einer Ableitung), Vorhofflimmer-Hinweis (eigener, nicht klinisch validierter Algorithmus; erst ab ~100 Schlägen), Signalqualität |
+| **Eingeschränkt** | HF/LF-Leistung (stark atemabhängig), LF/HF (als „Stressbalance“ umstritten), SDNN (dauerabhängig), Extraschläge und Muster (S/V nur über die Form einer Ableitung), Vorhofflimmer-Hinweis (eigener, nicht klinisch validierter Algorithmus; erst ab ~100 Schlägen), Vorhofflattern (allein über die Frequenz kaum erkennbar), Signalqualität |
+| **Nicht möglich** | Herzinfarkt/Ischämie (ST-Strecke), Lagetyp, Hypertrophie, Schenkelblock-Typ, Schrittmacherimpulse (bei 130 Hz nicht sichtbar) |
 | **Nur Orientierung / eigener Verlauf** | QT/QTc, PQ, QRS-Breite und Amplituden (eine nicht standardisierte Brustgurt-Ableitung mit 130 Hz statt 12 Ableitungen mit ≥ 500 Hz), Stress-Index |
 
 QTc wird nach **Fridericia** bewertet (Bazett überkorrigiert bei hoher Frequenz), Grenze nach AHA/ACCF/HRS 2009:
 Männer 450, Frauen 460 ms; bei > 100/min oder unregelmäßigem Rhythmus keine Bewertung.
-Pausen werden nur gemeldet, wenn auch die RR-Messung des Gurts sie bestätigt.
+Pausen und ausgefallene Schläge werden nur gemeldet, wenn auch die RR-Messung des Gurts sie bestätigt.
+Bewusst abweichend von manchen Lehrbüchern: Bradykardie erst unter 50/min (ACC/AHA/HRS 2018, vermeidet
+Fehlalarme bei Trainierten), „QTc kurz“ erst unter 340 ms (das T-Wellen-Ende ist beim Gurt zu ungenau für 390 ms).
 Demo-Aufnahmen erscheinen nicht im Verlauf.
 
 ## Methoden und Quellen
@@ -101,6 +122,10 @@ verschiedene Quellen weichen teils voneinander ab.
 |---|---|
 | R-Zacken-Erkennung | Pan & Tompkins (1985), IEEE Trans Biomed Eng |
 | HRV Zeit- und Frequenzbereich (SDNN, RMSSD, LF 0,04–0,15 Hz, HF 0,15–0,4 Hz) | Task Force der ESC/NASPE (1996), Circulation |
+| RR-Artefaktkorrektur | Lipponen & Tarvainen (2019), J Med Eng Technol |
+| DFA α1 und Artefaktanteil | Rogers et al. (2021), Sensors |
+| Vorhofflimmern: ärztliche Befundung eines ≥ 30-s-Streifens | ESC-Leitlinie Vorhofflimmern (2024) |
+| Aussagekraft des H10-EKGs, Vorsicht bei Schrittmacher und Vorhofflattern | Skála et al. (2022), Cor et Vasa; Gilgen-Ammann et al. (2019) |
 | Poincaré SD1/SD2 | Brennan et al. (2001) |
 | Stress-Index | Baevsky; Darstellung als √SI wie in Kubios HRV |
 | DFA α1 und Belastungsschwellen (0,75 / 0,5) | Peng et al. (1995); Rogers & Gronwald et al. (2021) |

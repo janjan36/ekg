@@ -65,6 +65,14 @@
             <option value="600">10 min</option>
           </select>
         </label>
+        <label class="field">
+          Situation
+          <select id="selSituation">
+            <option value="liegend">Ruhe liegend</option>
+            <option value="sitzend" selected>Ruhe sitzend</option>
+            <option value="belastung">Belastung</option>
+          </select>
+        </label>
         <span class="timer" id="timer">00:00</span>
       </div>
     </section>
@@ -132,7 +140,9 @@
           </div>
         </div>
         <p class="hint">Automatische Auswertung eines Einkanal-EKGs (130 Hz). Zeiten sind Näherungswerte;
-          die Auswertung ersetzt keine ärztliche Beurteilung.</p>
+          die Auswertung ersetzt keine ärztliche Beurteilung. <strong>Herzinfarkt und Durchblutungsstörungen sind mit dem
+          Brustgurt nicht erkennbar</strong> – bei Brustschmerz, Atemnot oder Ohnmacht 112 rufen. Bei Herzschrittmacher ist die
+          automatische Auswertung unzuverlässig.</p>
       </div>
 
       <div class="analysis" id="hrvxBox">
@@ -158,8 +168,18 @@
       <p class="hint">Scrollen (Mausrad, Wischen oder Leiste) zum Durchblättern. Klick in die Herzfrequenzkurve springt zur Stelle.</p>
       <div class="sub-label">Herzfrequenz</div>
       <div class="tacho"><canvas id="tachoCanvas"></canvas></div>
+      <div class="row wrap">
+        <label class="field">Situation
+          <select id="reviewSituation">
+            <option value="">keine Angabe</option>
+            <option value="liegend">Ruhe liegend</option>
+            <option value="sitzend">Ruhe sitzend</option>
+            <option value="belastung">Belastung</option>
+          </select>
+        </label>
+      </div>
       <label class="field block">Notiz
-        <input type="text" id="reviewNote" placeholder="z. B. Ruhe, liegend">
+        <input type="text" id="reviewNote" placeholder="z. B. nach dem Aufstehen, Herzstolpern">
       </label>
       <div class="row wrap">
         <button class="btn" id="btnCsvEcg">EKG als CSV</button>
@@ -179,10 +199,20 @@
     <section class="card" data-panel="verlauf" hidden>
       <div class="trend-head">
         <h2>Verlauf</h2>
+        <label class="field">
+          <select id="selTrendSituation" aria-label="Situation">
+            <option value="">alle Situationen</option>
+            <option value="liegend">Ruhe liegend</option>
+            <option value="sitzend">Ruhe sitzend</option>
+            <option value="belastung">Belastung</option>
+          </select>
+        </label>
         <button class="btn small" id="btnTrendTable">Als Tabelle</button>
       </div>
       <p class="hint" id="trendHint">Jeder Punkt ist eine Aufnahme – Tippen/Klicken öffnet sie. Das graue Band zeigt deinen
-        persönlichen Normalbereich (Mittelwert ± 1 Standardabweichung), sobald mindestens 5 Aufnahmen vorliegen.</p>
+        persönlichen Normalbereich (Mittelwert ± 1 Standardabweichung), sobald mindestens 5 Aufnahmen vorliegen.
+        Vergleichbar sind nur Aufnahmen derselben Situation, möglichst zur gleichen Tageszeit (Task Force 1996).
+        HRV-Werte erst ab 2 min Aufnahmedauer und nicht bei unregelmäßigem Rhythmus.</p>
       <div class="trend-grid" id="trendCharts"></div>
       <div class="trend-table" id="trendTable" hidden></div>
       <p class="muted" id="trendEmpty" hidden>Noch keine passenden Aufnahmen.</p>

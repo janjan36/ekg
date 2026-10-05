@@ -36,16 +36,15 @@
   const variance = v => { const m = mean(v); return v.reduce((a, x) => a + (x - m) ** 2, 0) / (v.length - 1); };
   const nextPow2 = n => 2 ** Math.ceil(Math.log2(Math.max(2, n)));
 
-  // Gültige Intervalle (Artefakte/Extraschläge raus) mit ihrer Zeit (s, Ende des Intervalls)
+  // Korrigierte NN-Reihe (Artefakte/Extraschläge ersetzt, Lipponen & Tarvainen) mit ihrer Zeit
+  // (s, Ende des Intervalls); share = Anteil korrigierter Intervalle
   function cleanSeries(rr, rrT) {
-    const valid = global.Hrv.validateRR(Array.from(rr));
-    const t = [], nn = [];
-    let acc = 0;
-    for (let i = 0; i < rr.length; i++) {
-      acc += rr[i] / 1000;
-      if (valid[i]) { t.push(rrT ? rrT[i] : acc); nn.push(rr[i]); }
+    if (!rrT) {
+      let acc = 0;
+      rrT = Array.from(rr, v => (acc += v / 1000));
     }
-    return { t, nn, valid };
+    const c = global.Hrv.correct(rr, rrT);
+    return { t: c.t, nn: c.nn, valid: c.flags.map(f => f === 'ok'), share: c.share };
   }
 
   // Gleichmäßige Abtastung per natürlichem kubischem Spline (lineare Interpolation würde das
@@ -138,15 +137,15 @@
       lfhf: hf > 0 ? lf / hf : null,
       lfnu: 100 * lf / (lf + hf), hfnu: 100 * hf / (lf + hf),
       lfPeak: peakIn(spec, ...BANDS.lf), hfPeak: peakIn(spec, ...BANDS.hf),
-      lfReliable: duration >= 120
+      lfReliable: duration >= 115   // 2 min Aufnahme (die RR-Spanne ist ein paar Sekunden kürzer)
     };
   }
 
   /* ---------- Poincaré und Stress-Index ---------- */
   function poincare(rr) {
-    const { nn, valid } = cleanSeries(rr);
+    const { nn } = cleanSeries(rr);
     const pairs = [];
-    for (let i = 1; i < rr.length; i++) if (valid[i] && valid[i - 1]) pairs.push([rr[i - 1], rr[i]]);
+    for (let i = 1; i < nn.length; i++) pairs.push([nn[i - 1], nn[i]]);
     if (pairs.length < 10) return null;
     const d = pairs.map(([a, b]) => b - a);
     const vd = variance(d), vnn = variance(nn);
@@ -206,9 +205,18 @@
     return sxy / sxx;
   }
 
+  // Ab 5 % korrigierten Intervallen wird DFA α1 nicht angegeben: Artefaktkorrektur hebt α1 dann
+  // fälschlich an, 1–3 % sind unkritisch (Rogers et al., Sensors 2021)
+  const DFA_MAX_ARTIFACTS = 0.05;
+
   function dfaOf(rr) {
-    const { nn } = cleanSeries(rr);
-    return { a1: dfa(nn, 4, 16), a2: nn.length >= 200 ? dfa(nn, 16, 64) : null, beats: nn.length };
+    const { nn, share } = cleanSeries(rr);
+    const tooMany = share > DFA_MAX_ARTIFACTS;
+    return {
+      a1: tooMany ? null : dfa(nn, 4, 16),
+      a2: tooMany || nn.length < 200 ? null : dfa(nn, 16, 64),
+      beats: nn.length, share, tooMany
+    };
   }
 
   // Einordnung von DFA α1 bei Belastung (Rogers/Gronwald): 0,75 ≈ aerobe, 0,5 ≈ anaerobe Schwelle
@@ -220,5 +228,5 @@
     return { code: 'z3', text: 'über anaerober Schwelle' };
   }
 
-  global.HrvX = { frequency, poincare, stressIndex, dfaOf, dfa, dfaZone, cleanSeries, BANDS };
+  global.HrvX = { frequency, poincare, stressIndex, dfaOf, dfa, dfaZone, cleanSeries, BANDS, DFA_MAX_ARTIFACTS };
 })(window);

@@ -69,14 +69,14 @@
 
   /* ---------- Frequenzspektrum ---------- */
   class PsdChart extends BaseChart {
-    setData(freq) { this.freq = freq; this.render(); }
+    setData(freq, note) { this.freq = freq; this.note = note; this.render(); }
 
     render() {
       const s = setup(this.canvas);
       if (!s) return;
       const { ctx, w, h } = s, c = this.c;
       ctx.fillStyle = c.surface; ctx.fillRect(0, 0, w, h);
-      if (!this.freq) return this.empty(ctx, w, h, 'Mindestens 1 Minute saubere Daten nötig');
+      if (!this.freq) return this.empty(ctx, w, h, this.note || 'Mindestens 1 Minute saubere Daten nötig');
       const { f, p } = this.freq.spec;
       const fMax = 0.5, padL = 8, padB = 18, padT = 8, pw = w - padL - 8, ph = h - padB - padT;
       let pMax = 0;
@@ -129,14 +129,14 @@
 
   /* ---------- Poincaré-Plot ---------- */
   class PoincareChart extends BaseChart {
-    setData(pc) { this.pc = pc; this.render(); }
+    setData(pc, note) { this.pc = pc; this.note = note; this.render(); }
 
     render() {
       const s = setup(this.canvas);
       if (!s) return;
       const { ctx, w, h } = s, c = this.c;
       ctx.fillStyle = c.surface; ctx.fillRect(0, 0, w, h);
-      if (!this.pc) return this.empty(ctx, w, h, 'Zu wenige Schläge');
+      if (!this.pc) return this.empty(ctx, w, h, this.note || 'Zu wenige Schläge');
       const { pairs, sd1, sd2, meanRR } = this.pc;
       const all = pairs.flat();
       let lo = Math.min(...all), hi = Math.max(...all);

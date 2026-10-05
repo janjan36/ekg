@@ -137,15 +137,21 @@
     page.text(x, y + 2.75, type, { size: 8, bold: true, color: '#ffffff', align: 'center' });
   }
 
+  // Jede Zeile beginnt mit einer Eichzacke 1 mV (200 ms breit) im 8-mm-Vorspann
+  const CAL_W = 8;
+
   function drawStrip(page, x0, y0, rowH, values, fs, start, end, view, ann) {
-    const X = i => x0 + (i - start) / fs * view.speed;
+    const X = i => x0 + CAL_W + (i - start) / fs * view.speed;
     for (const s of ann.bad) {
       if (s.end <= start || s.start >= end) continue;
       const a = X(Math.max(s.start, start)), b = X(Math.min(s.end, end));
       page.fill(C.bad); page.rect(a, y0, b - a, rowH);
     }
-    drawGrid(page, x0, y0, STRIP_W, rowH);
+    drawGrid(page, x0, y0, STRIP_W + CAL_W, rowH);
     const mid = y0 + rowH / 2;
+    const top = mid - view.gain;
+    page.stroke(C.trace, 0.4);
+    page.polyline([[x0 + 1, mid], [x0 + 2, mid], [x0 + 2, top], [x0 + 7, top], [x0 + 7, mid], [x0 + 8, mid]]);
     const pts = [];
     for (let i = start; i < end; i++) {
       pts.push([X(i), Math.max(y0, Math.min(y0 + rowH, mid - values[i] / 1000 * view.gain))]);
@@ -187,9 +193,12 @@
       page.text(x, up ? yy - 1.6 : yy + 3.6, label, { size: 7, bold: true, color: C.mark, align: 'center' });
     }
     const a = times.amps, mv = v => (v == null ? '–' : (v / 1000).toFixed(2).replace('.', ','));
-    page.text(x0, y0 + height + 4, `Durchschnittsschlag aus ${count} Schlägen · ${speed} mm/s · ${gain} mm/mV`, { size: 7, color: C.muted });
-    page.text(x0, y0 + height + 7.5, `Amplituden (mV): P ${mv(a.p)} · R ${mv(a.r)} · S ${mv(a.s)} · T ${mv(a.t)}`, { size: 7, color: C.muted });
-    return { width, height: height + 8 };
+    // Bildunterschrift innerhalb der Bildbreite umbrechen (bei hoher Frequenz ist das Bild schmal)
+    const caption = [`Durchschnittsschlag aus ${count} Schlägen · ${speed} mm/s · ${gain} mm/mV`,
+      `Amplituden (mV, nicht kalibriert): P ${mv(a.p)} · R ${mv(a.r)} · S ${mv(a.s)} · T ${mv(a.t)}`]
+      .flatMap(s => global.Pdf.wrap(s, width, 7, false));
+    caption.forEach((line, k) => page.text(x0, y0 + height + 4 + 3.5 * k, line, { size: 7, color: C.muted }));
+    return { width, height: height + 1 + 3.5 * caption.length };
   }
 
   const f0 = v => (v == null ? '–' : v.toFixed(0));
@@ -223,22 +232,27 @@
     page.text(MARGIN, y, `EKG-Aufzeichnung – ${meta.device}`, { size: 14, bold: true });
     y += 6;
     const filters = [view.highpass && 'Grundlinie 0,5 Hz', view.notch && '50 Hz'].filter(Boolean).join(', ') || 'keine';
+    const situation = { liegend: 'Ruhe liegend', sitzend: 'Ruhe sitzend', belastung: 'Belastung' }[meta.situation];
     page.text(MARGIN, y, `${new Date(meta.startTime).toLocaleString('de-DE')} · Dauer ${fmtDuration(meta.duration)} · ` +
-      `${view.speed} mm/s · ${view.gain} mm/mV · Filter: ${filters}${meta.note ? ' · Notiz: ' + meta.note : ''}`, { size: 9 });
+      `${situation ? situation + ' · ' : ''}${view.speed} mm/s · ${view.gain} mm/mV (Eichzacke 1 mV) · ${fs} Hz · Filter: ${filters}` +
+      `${meta.note ? ' · Notiz: ' + meta.note : ''}`, { size: 9 });
     y += 5;
+    const blocked = !!cur.hrvBlocked;
     const runs = stats ? [
       ['Ø HF ', true], [`${f0(stats.meanHR)} /min    `, false],
       ['Min/Max ', true], [`${f0(stats.minHR)}/${f0(stats.maxHR)} /min    `, false],
-      ['SDNN ', true], [`${f0(stats.sdnn)} ms    `, false],
-      ['RMSSD ', true], [`${f0(stats.rmssd)} ms    `, false],
-      ['pNN50 ', true], [`${f0(stats.pnn50)} %    `, false],
-      ['Schläge ', true], [`${stats.beats} (${stats.artifacts} Artefakte)`, false]
+      ...(blocked ? [['HRV nicht berechnet (unregelmäßiger Rhythmus)    ', false]] : [
+        ['SDNN ', true], [`${f0(stats.sdnn)} ms    `, false],
+        ['RMSSD ', true], [`${f0(stats.rmssd)} ms    `, false],
+        ['pNN50 ', true], [`${f0(stats.pnn50)} %    `, false]
+      ]),
+      ['Schläge ', true], [`${stats.beats} (${stats.artifacts} korrigiert)`, false]
     ] : [['Keine RR-Daten', false]];
     page.runs(MARGIN, y, runs, { size: 9 });
     y += 4.5;
 
     // Erweiterte HRV in einer Zeile
-    if (hrvx) {
+    if (hrvx && !blocked) {
       const { freq, pc, si, dfa } = hrvx;
       const d2 = v => (v == null ? '–' : v.toFixed(2).replace('.', ','));
       const x = [];
@@ -293,7 +307,8 @@
 
     // Fußzeile auf jeder Seite
     doc.pages.forEach((p, i) => {
-      p.text(MARGIN, PAGE_H - MARGIN + 3, 'Einkanal-EKG (Polar H10, 130 Hz). Kein Medizinprodukt – keine Diagnose.', { size: 7, color: C.muted });
+      p.text(MARGIN, PAGE_H - MARGIN + 3, 'Einkanal-EKG (Polar H10, 130 Hz). Kein Medizinprodukt – keine Diagnose. ' +
+        'Herzinfarkt und Durchblutungsstörungen sind damit nicht erkennbar.', { size: 7, color: C.muted });
       p.text(right, PAGE_H - MARGIN + 3, `Seite ${i + 1} von ${doc.pages.length}`, { size: 7, color: C.muted, align: 'right' });
     });
 

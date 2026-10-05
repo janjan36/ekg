@@ -4,7 +4,8 @@
  *  3. Schlagtypen: N normal, S vorzeitig mit normaler Form (supraventrikulär),
  *     V vorzeitig mit abweichender Form (ventrikulär), A abweichende Form, U nicht auswertbar
  *  4. Rhythmus: Frequenz, Regelmäßigkeit (Kriterien nach Dash et al. 2009), Pausen
- *  5. EKG-Zeiten (PQ, QRS, QT, QTc) am Median-Schlag */
+ *  5. Muster: Couplets, Salven, Bigeminus/Trigeminus, ausgefallene Schläge, plötzliches Herzrasen
+ *  6. EKG-Zeiten (PQ, QRS, QT, QTc) am Median-Schlag */
 (function (global) {
   'use strict';
 
@@ -148,7 +149,8 @@
   }
 
   /* ---------- 2. Signalqualität ---------- */
-  function assessQuality(clean, r, fs) {
+  // gaps: Übertragungslücken [{ start, len }] (Samples) – dort aufgefüllte Werte, nicht auswertbar
+  function assessQuality(clean, r, fs, gaps = []) {
     const n = clean.length, win = 2 * fs;
     const near = new Uint8Array(n);
     const ex = Math.round(0.1 * fs);
@@ -158,9 +160,21 @@
 
     const bad = new Uint8Array(n);
     const segments = [];
+    // Lücke plus 1 s davor/danach (Einschwingen der Filter an der Stufe)
+    const inGap = new Uint8Array(n);
+    for (const g of gaps) {
+      const s = Math.max(0, g.start - fs), e = Math.min(n, g.start + g.len + fs);
+      if (e <= s) continue;
+      inGap.fill(1, s, e);
+      bad.fill(1, s, e);
+      segments.push({ start: s, end: e, type: 'gap', len: g.len });
+    }
     for (let s = 0, e; s < n; s = e) {
       e = Math.min(n, s + win);
       if (n - e < fs) e = n;   // kurzen Rest an den letzten Abschnitt anhängen
+      let g = 0;
+      for (let i = s; i < e; i++) g += inGap[i];
+      if (g > (e - s) / 2) continue;   // überwiegend Lücke – schon markiert
       const sorted = Array.from(clean.subarray(s, e)).sort((a, b) => a - b);
       const range = sorted[Math.floor(0.98 * (sorted.length - 1))] - sorted[Math.floor(0.02 * (sorted.length - 1))];
       // Rauschen = Effektivwert der 2. Ableitung außerhalb der QRS-Komplexe, ohne die höchsten 4 %
@@ -181,6 +195,7 @@
       if (last && last.end === s && last.type === type) last.end = e;
       else segments.push({ start: s, end: e, type });
     }
+    segments.sort((a, b) => a.start - b.start);
     let badCount = 0;
     for (let i = 0; i < n; i++) badCount += bad[i];
     return { bad, segments, good: n ? 1 - badCount / n : 0, rAmp };
@@ -191,7 +206,11 @@
     const n = clean.length;
     const A = Math.round(0.1 * fs), B = Math.round(0.12 * fs);
     const usable = r.map(i => !bad[i]);
-    const rr = r.map((i, k) => (k && usable[k] && usable[k - 1] ? (i - r[k - 1]) * 1000 / fs : null));
+    // Abstand nur, wenn dazwischen kein gestörter Abschnitt (z. B. Übertragungslücke) liegt
+    const badPre = new Uint32Array(n + 1);
+    for (let i = 0; i < n; i++) badPre[i + 1] = badPre[i] + bad[i];
+    const rr = r.map((i, k) => (k && usable[k] && usable[k - 1] && badPre[i] === badPre[r[k - 1]]
+      ? (i - r[k - 1]) * 1000 / fs : null));
     const refs = r.map((_, k) => {
       const v = [];
       for (let j = Math.max(1, k - 6); j <= Math.min(r.length - 1, k + 6); j++) {
@@ -201,9 +220,12 @@
     });
     // Erwartetes RR an Stelle k aus den Nachbarn k−3…k−1 und k+2…k+3 (k und das folgende,
     // evtl. kompensatorische Intervall ausgelassen), per Parabel angepasst. Folgt der Atemwelle.
+    // Schon als vorzeitig erkannte Schläge und ihre Folgeintervalle zählen nicht mit (Salven).
+    const prem = [];
     const expectedRR = k => {
       const pts = [];
       for (const j of [k - 3, k - 2, k - 1, k + 2, k + 3]) {
+        if (j < k && (prem[j] || prem[j - 1])) continue;
         if (j >= 1 && j < rr.length && rr[j] != null) pts.push([j - k, rr[j]]);
       }
       if (pts.length < 3) return refs[k];
@@ -251,8 +273,11 @@
       const corr = template && seg(k) ? bestCorr(k, template) : 1;
       // Vorzeitig = deutlich kürzer als lokal erwartet UND abrupt kürzer als das vorige Intervall.
       // Die atemabhängige Schwankung (auch bei tiefer Atmung) ändert sich dagegen allmählich.
+      // Folgt ein vorzeitiger Schlag direkt auf einen anderen, gehört er zu einer Salve.
       const exp = rr[k] ? expectedRR(k) : null;
-      const premature = rr[k] && exp && rr[k] < 0.82 * exp && (rr[k - 1] == null || rr[k] < 0.9 * rr[k - 1]);
+      const premature = !!(rr[k] && exp && rr[k] < 0.82 * exp &&
+        (rr[k - 1] == null || rr[k] < 0.9 * rr[k - 1] || prem[k - 1]));
+      prem[k] = premature && usable[k];
       let type = 'N';
       if (!usable[k]) type = 'U';
       else if (premature) type = corr < 0.7 ? 'V' : 'S';
@@ -335,7 +360,87 @@
     };
   }
 
-  /* ---------- 5. Median-Schlag und EKG-Zeiten ---------- */
+  /* ---------- 5. Muster ---------- */
+  // ref: RR-Intervalle des Gurts zur Gegenprüfung ausgefallener Schläge (ohne ref keine Meldung)
+  function patternsOf(beats, fs, rhythm, ref) {
+    const out = {
+      couplets: { S: 0, V: 0 }, runs: { S: [], V: [] },
+      bigeminy: { S: 0, V: 0 }, trigeminy: { S: 0, V: 0 },   // längste Folge (Anzahl Extraschläge)
+      dropped: [], onset: null
+    };
+
+    // Unmittelbar aufeinanderfolgende Extraschläge gleicher Art: 2 = Couplet, ≥ 3 = Salve
+    for (let k = 0; k < beats.length;) {
+      const t = beats[k].type;
+      let e = k;
+      while (e + 1 < beats.length && beats[e + 1].type === t) e++;
+      const len = e - k + 1;
+      if ((t === 'S' || t === 'V') && len === 2) out.couplets[t]++;
+      if ((t === 'S' || t === 'V') && len >= 3) {
+        const rrs = beats.slice(k + 1, e + 1).map(b => b.rr).filter(v => v != null);
+        out.runs[t].push({ i: beats[k].i, len, hr: rrs.length ? 60000 / mean(rrs) : null });
+      }
+      k = e + 1;
+    }
+
+    // Bigeminus (N X N X …) und Trigeminus (N N X N N X …), mindestens 3 Extraschläge in Folge
+    for (const X of ['S', 'V']) {
+      for (const [step, key] of [[2, 'bigeminy'], [3, 'trigeminy']]) {
+        let chain = 1, prev = -1;
+        const flush = () => { if (chain >= 3) out[key][X] = Math.max(out[key][X], chain); };
+        beats.forEach((b, k) => {
+          if (b.type !== X) return;
+          if (prev >= 0 && k - prev === step && beats.slice(prev + 1, k).every(x => x.type === 'N')) chain++;
+          else { flush(); chain = 1; }
+          prev = k;
+        });
+        flush();
+      }
+    }
+    if (rhythm.af) return out;
+
+    // Ausgefallener Schlag: Abstand etwa doppelt so lang wie üblich (Hinweis auf SA- oder AV-Block II°).
+    // Nur melden, wenn die RR-Messung des Gurts das lange Intervall bestätigt – sonst eher eine
+    // übersehene R-Zacke. Pausen über 2 s werden gesondert gemeldet.
+    if (ref && ref.rr && ref.rr.length) {
+      for (let k = 1; k < beats.length; k++) {
+        const b = beats[k];
+        if (b.rr == null || b.rr > 2000 || b.type !== 'N' || beats[k - 1].type !== 'N') continue;
+        const loc = [];
+        for (let j = Math.max(1, k - 8); j <= Math.min(beats.length - 1, k + 8); j++) {
+          if (j !== k && beats[j].rr != null && beats[j].type === 'N' && beats[j - 1].type === 'N') loc.push(beats[j].rr);
+        }
+        if (loc.length < 6) continue;
+        const m = median(loc), q = b.rr / m;
+        if (q < 1.75 || q > 2.25) continue;
+        const t = b.i / fs;
+        for (let j = 0; j < ref.rr.length; j++) {
+          if (Math.abs(ref.rrT[j] - t) < 5 && ref.rr[j] > 1.6 * m) { out.dropped.push({ i: b.i, rr: b.rr }); break; }
+        }
+      }
+    }
+
+    // Plötzliches Herzrasen: Frequenz springt innerhalb eines Schlags um > 30/min auf > 150/min und
+    // bleibt dann sehr regelmäßig (typisch für eine anfallsartige supraventrikuläre Tachykardie).
+    // Eine Sinustachykardie, z. B. bei Belastung, steigt dagegen über viele Schläge allmählich an.
+    const seq = [];
+    for (let k = 1; k < beats.length; k++) {
+      if (beats[k].rr != null && (beats[k].type === 'N' || beats[k].type === 'S')) seq.push({ k, rr: beats[k].rr, i: beats[k].i });
+    }
+    for (let x = 6; x + 10 <= seq.length; x++) {
+      if (seq[x + 9].k - seq[x - 6].k !== 15) continue;   // durchgehend auswertbar
+      const before = median(seq.slice(x - 6, x).map(s => s.rr));
+      const after = seq.slice(x, x + 10).map(s => s.rr);
+      const hrB = 60000 / before, hrA = 60000 / median(after);
+      if (hrA > 150 && hrA - hrB > 30 && seq[x].rr < 0.85 * before && nRmssd(after.slice(1)) < 0.05) {
+        out.onset = { i: seq[x].i, from: hrB, to: hrA };
+        break;
+      }
+    }
+    return out;
+  }
+
+  /* ---------- 6. Median-Schlag und EKG-Zeiten ---------- */
   function medianBeat(clean, beats, fs, rrMs) {
     const rrS = (rrMs || 1000) / 1000;
     const pre = Math.round(Math.min(0.3, 0.45 * rrS) * fs);
@@ -344,6 +449,8 @@
     for (let k = 1; k < beats.length - 1; k++) {
       const b = beats[k];
       if (b.type !== 'N') continue;
+      // Nur Schläge mit ähnlichem Abstand – sonst verschmieren bei wechselnder Frequenz T-Welle und QRS-Grenzen
+      if (b.rr == null || Math.abs(b.rr / (rrMs || 1000) - 1) > 0.15) continue;
       if (b.i - beats[k - 1].i <= pre || beats[k + 1].i - b.i <= post) continue;
       if (b.i - pre < 0 || b.i + post >= clean.length) continue;
       segs.push(clean.subarray(b.i - pre, b.i + post + 1));
@@ -450,24 +557,45 @@
   }
 
   /* ---------- Befundtexte ---------- */
-  function summarize(res) {
+  // Formulierung: Fachbegriffe, keine pauschale Entwarnung, bei Auffälligkeiten Rat zur ärztlichen Befundung
+  // (ESC 2024: Diagnose nur nach ärztlicher Befundung eines ≥ 30-s-Streifens)
+  const CHECK = ' – ärztlich abklären lassen';
+  const pl = (n, one, many) => (n === 1 ? one : many);
+  const de1 = v => v.toFixed(1).replace('.', ',');
+
+  // situation: 'liegend' | 'sitzend' | 'belastung' | undefined
+  function summarize(res, situation) {
     const f = [];
     const add = (level, text) => f.push({ level, text });
-    const { quality, rhythm, times, counts } = res;
+    const { quality, rhythm, times, counts, patterns: pt, fs } = res;
     const pct = Math.round(quality.good * 100);
+    const exercise = situation === 'belastung';
 
     if (pct >= 90) add('ok', `Signalqualität gut (${pct} % auswertbar)`);
     else if (pct >= 60) add('info', `Signal teilweise gestört (${pct} % auswertbar)`);
     else add('warn', `Signal stark gestört (${pct} % auswertbar) – Auswertung unsicher`);
-
-    if (rhythm.hr) {
-      const hr = Math.round(rhythm.hr);
-      if (hr < 50) add('info', `Herzfrequenz Ø ${hr} /min – langsam (Bradykardie; in Ruhe bei Trainierten häufig normal)`);
-      else if (hr > 100) add('warn', `Herzfrequenz Ø ${hr} /min – schnell (Tachykardie, in Ruhe auffällig)`);
-      else add('ok', `Herzfrequenz Ø ${hr} /min – normal`);
+    const gaps = quality.segments.filter(s => s.type === 'gap');
+    if (gaps.length) {
+      const sec = gaps.reduce((a, s) => a + s.len, 0) / fs;
+      add('info', `${gaps.length} ${pl(gaps.length, 'Übertragungslücke', 'Übertragungslücken')} (zusammen ${de1(sec)} s fehlend) – ` +
+        'dort und je 1 s davor/danach keine Auswertung');
     }
 
-    add(rhythm.af ? 'warn' : rhythm.label.code === 'na' ? 'info' : 'ok', `Rhythmus ${rhythm.label.text}`);
+    const hr = rhythm.hr ? Math.round(rhythm.hr) : null;
+    if (hr) {
+      if (hr < 50) add('info', `Herzfrequenz Ø ${hr} /min – langsam (Bradykardie; in Ruhe bei Trainierten häufig normal)`);
+      else if (hr > 100 && exercise) add('ok', `Herzfrequenz Ø ${hr} /min (Belastung)`);
+      else if (hr > 100) {
+        let t = `Herzfrequenz Ø ${hr} /min – schnell (Tachykardie, in Ruhe auffällig)`;
+        if (hr >= 135 && hr <= 165 && rhythm.label.code === 'regular') {
+          t += ' – sehr regelmäßig um 150/min: auch Vorhofflattern mit 2:1-Überleitung möglich';
+        }
+        add('warn', t + CHECK);
+      } else add('ok', `Herzfrequenz Ø ${hr} /min – normal`);
+    }
+
+    add(rhythm.af ? 'warn' : rhythm.label.code === 'na' ? 'info' : 'ok',
+      `Rhythmus ${rhythm.label.text}${rhythm.af ? ' – Streifen (PDF) ärztlich befunden lassen' : ''}`);
 
     const ect = counts.S + counts.V;
     if (!ect) add('ok', 'Keine Extraschläge erkannt');
@@ -477,20 +605,60 @@
       if (counts.V) parts.push(`${counts.V} ventrikulär`);
       const share = ect / Math.max(1, counts.total);
       add(share > 0.05 ? 'warn' : 'info',
-        `${ect} Extraschl${ect === 1 ? 'ag' : 'äge'} (${parts.join(', ')} – wahrscheinlich), ${(share * 100).toFixed(1).replace('.', ',')} % der Schläge`);
+        `${ect} Extraschl${ect === 1 ? 'ag' : 'äge'} (${parts.join(', ')} – wahrscheinlich), ` +
+        `${de1(share * 100)} % der Schläge${share > 0.05 ? CHECK : ''}`);
     }
     if (counts.A) add('info', `${counts.A} Schl${counts.A === 1 ? 'ag' : 'äge'} mit abweichender Form (Störung oder Extraschlag)`);
 
+    // Muster
+    if (pt) {
+      const longest = runs => runs.reduce((a, r) => (r.len > a.len ? r : a));
+      if (pt.runs.V.length) {
+        const l = longest(pt.runs.V);
+        add('warn', `${pt.runs.V.length} ventrikuläre ${pl(pt.runs.V.length, 'Salve', 'Salven')} (längste ${l.len} VES in Folge` +
+          `${l.hr ? `, ${Math.round(l.hr)} /min` : ''}) – nicht anhaltende Kammertachykardie möglich${CHECK}`);
+      }
+      if (pt.couplets.V) add('info', `${pt.couplets.V} ventrikuläre${pl(pt.couplets.V, 's Couplet', ' Couplets')} (2 VES direkt hintereinander)`);
+      if (pt.bigeminy.V) add('info', `Ventrikulärer Bigeminus (jeder 2. Schlag eine VES, bis zu ${pt.bigeminy.V} in Folge) – Pulsuhren zeigen dabei oft nur die halbe Frequenz`);
+      else if (pt.trigeminy.V) add('info', `Ventrikulärer Trigeminus (jeder 3. Schlag eine VES, bis zu ${pt.trigeminy.V} in Folge)`);
+      if (pt.runs.S.length) {
+        const l = longest(pt.runs.S);
+        add('info', `${pt.runs.S.length} supraventrikuläre ${pl(pt.runs.S.length, 'Salve', 'Salven')} (längste ${l.len} SVES in Folge` +
+          `${l.hr ? `, ${Math.round(l.hr)} /min` : ''}) – bei Häufung ärztlich abklären lassen`);
+      }
+      if (pt.couplets.S) add('info', `${pt.couplets.S}× zwei SVES direkt hintereinander`);
+      if (pt.bigeminy.S) add('info', `Supraventrikulärer Bigeminus (jeder 2. Schlag eine SVES, bis zu ${pt.bigeminy.S} in Folge)`);
+      else if (pt.trigeminy.S) add('info', `Supraventrikulärer Trigeminus (jeder 3. Schlag eine SVES, bis zu ${pt.trigeminy.S} in Folge)`);
+      if (pt.dropped.length) {
+        add('warn', `${pt.dropped.length} ${pl(pt.dropped.length, 'ausgefallener Schlag', 'ausgefallene Schläge')} ` +
+          `(Pause ≈ doppelter Abstand – Hinweis auf SA- oder AV-Block II°)${CHECK}`);
+      }
+      if (pt.onset) {
+        add('warn', `Plötzlicher Frequenzanstieg von ${Math.round(pt.onset.from)} auf ${Math.round(pt.onset.to)} /min ` +
+          `innerhalb eines Schlags, danach sehr regelmäßig – typisch für eine anfallsartige supraventrikuläre Tachykardie${CHECK}`);
+      }
+    }
+
     if (rhythm.pauses.length) {
       const longest = Math.max(...rhythm.pauses.map(p => p.rr)) / 1000;
-      add('warn', `${rhythm.pauses.length} Pause${rhythm.pauses.length > 1 ? 'n' : ''} über 2 s (längste ${longest.toFixed(1).replace('.', ',')} s)`);
+      add('warn', `${rhythm.pauses.length} Pause${rhythm.pauses.length > 1 ? 'n' : ''} über 2 s (längste ${de1(longest)} s)${CHECK}`);
     }
 
     if (times) {
       const notes = [];
       if (times.pq != null && times.pq > 200) notes.push(['info', `PQ-Zeit verlängert (${Math.round(times.pq)} ms)`]);
       if (times.pq != null && times.pq < 120) notes.push(['info', `PQ-Zeit kurz (${Math.round(times.pq)} ms)`]);
-      if (times.qrs != null && times.qrs >= 120) notes.push(['info', `QRS verbreitert (${Math.round(times.qrs)} ms)`]);
+      const wide = times.qrs != null && times.qrs >= 120;
+      if (wide && hr > 120 && exercise) {
+        notes.push(['info', `QRS verbreitert gemessen (${Math.round(times.qrs)} ms) – unter Belastung ist die Messung unsicher; ` +
+          'bei Beschwerden ärztlich abklären lassen']);
+      } else if (wide && hr > 120 && pct >= 90) {
+        notes.push(['warn', `Schneller Rhythmus mit breitem QRS (${Math.round(times.qrs)} ms) – kann eine Kammertachykardie sein: ` +
+          'bei Beschwerden 112, sonst umgehend ärztlich abklären. Bewegungsstörungen können ähnlich aussehen.']);
+      } else if (wide && hr < 40 && rhythm.label.code === 'regular') {
+        notes.push(['warn', `Sehr langsamer, regelmäßiger Rhythmus mit breitem QRS (${Math.round(times.qrs)} ms) – ` +
+          'Hinweis auf einen höhergradigen AV-Block (III°) möglich; umgehend ärztlich abklären lassen']);
+      } else if (wide) notes.push(['info', `QRS verbreitert (${Math.round(times.qrs)} ms)`]);
       // QTc nach Fridericia (Bazett überkorrigiert bei hoher Frequenz). Normgrenze nach AHA/ACCF/HRS 2009:
       // Männer 450, Frauen 460 ms. Bei Frequenz > 100/min oder unregelmäßigem Rhythmus keine Bewertung.
       const qtc = times.qtcF;
@@ -500,7 +668,7 @@
       if (qtcRated && qtc < 340) notes.push(['info', `QTc kurz (${Math.round(qtc)} ms, Fridericia)`]);
       if (qtc != null && !qtcRated && rhythm.hr > 100) notes.push(['info', 'QTc bei Herzfrequenz über 100/min nicht bewertet (Frequenzkorrektur unzuverlässig)']);
       notes.forEach(([l, t]) => add(l, t));
-      if (!notes.length && (times.qrs != null || qtc != null)) add('ok', 'EKG-Zeiten im Normbereich (Näherung)');
+      if (!notes.length && (times.qrs != null || qtc != null)) add('ok', 'EKG-Zeiten ohne Auffälligkeit (Näherung)');
       if (!times.pWave && !rhythm.af) add('info', 'P-Welle nicht sicher erkennbar (beim Brustgurt häufig)');
     } else {
       add('info', 'EKG-Zeiten nicht bestimmbar (zu wenige saubere Schläge)');
@@ -510,22 +678,29 @@
 
   /* ---------- Gesamtauswertung ---------- */
   // opts.ref: RR-Intervalle des Gurts { rr, rrT } zur Gegenprüfung (optional)
+  // opts.gaps: Übertragungslücken [{ start, len }] in Samples (optional)
+  // opts.situation: 'liegend' | 'sitzend' | 'belastung' (optional)
   function analyze(raw, fs, opts = {}) {
     if (!raw || raw.length < 8 * fs) return null;
     const clean = zeroPhase(raw, () => [Biquad.highpass(fs, 0.5), Biquad.notch(fs, 50, 8), Biquad.lowpass(fs, 40)]);
     const { r } = detectR(clean, fs);
-    const quality = assessQuality(clean, r, fs);
+    const quality = assessQuality(clean, r, fs, opts.gaps || []);
     const beats = classify(clean, r, fs, quality.bad);
     const rhythm = rhythmOf(beats, fs, opts.ref);
+    const patterns = patternsOf(beats, fs, rhythm, opts.ref);
     const avg = rhythm.medianRR ? medianBeat(clean, beats, fs, rhythm.medianRR) : null;
     const times = avg ? measure(avg, fs, rhythm.medianRR) : null;
     const counts = { S: 0, V: 0, A: 0, U: 0, N: 0, total: 0 };
     for (const b of beats) { counts[b.type]++; if (b.type !== 'U') counts.total++; }
-    const res = { fs, beats, quality, rhythm, times, avgCount: avg ? avg.count : 0, counts };
-    res.findings = summarize(res);
+    const res = { fs, beats, quality, rhythm, patterns, times, avgCount: avg ? avg.count : 0, counts };
+    res.findings = summarize(res, opts.situation);
     res.level = res.findings.some(x => x.level === 'warn') ? 'warn'
       : res.findings.some(x => x.level === 'info') ? 'info' : 'ok';
-    res.headline = { ok: 'Unauffällig', info: 'Überwiegend unauffällig – Hinweise beachten', warn: 'Auffälligkeiten gefunden' }[res.level];
+    res.headline = {
+      ok: 'Keine Auffälligkeiten erkannt (automatisch)',
+      info: 'Hinweise beachten',
+      warn: 'Auffälligkeiten gefunden – PDF ärztlich befunden lassen'
+    }[res.level];
     return res;
   }
 

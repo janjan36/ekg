@@ -362,6 +362,7 @@ h2 { font-size: 1.05rem; margin: 0 0 10px; }
 
 /* ---------- Verlauf ---------- */
 .trend-head { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; }
+.trend-head h2 { margin-right: auto; }
 .trend-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; margin-top: 10px; }
 .trend-card { border: 1px solid var(--border); border-radius: 10px; padding: 10px; }
 .trend-title { display: flex; justify-content: space-between; gap: 8px; font-size: 0.88rem; margin-bottom: 6px; }

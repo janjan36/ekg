@@ -5,6 +5,7 @@
 
   const FS = 130;
   const MIN_SAVE_SECONDS = 5;
+  const MAX_GAP_S = 30;     // längste Lücke, die in einer Aufnahme aufgefüllt wird
   const $ = id => document.getElementById(id);
   const de = (v, d = 0) => (v == null || !isFinite(v) ? '–' : v.toFixed(d).replace('.', ','));
 
@@ -12,7 +13,7 @@
   const SETTINGS_KEY = 'polar-ekg-settings';
   const settings = Object.assign({
     speed: 25, gain: 10, highpass: true, notch: true,
-    pxPerMm: EcgCharts.DEFAULT_PX_PER_MM, csv: 'de', duration: 300
+    pxPerMm: EcgCharts.DEFAULT_PX_PER_MM, csv: 'de', duration: 300, situation: 'sitzend'
   }, (() => {
     try { return JSON.parse(localStorage.getItem(SETTINGS_KEY)) || {}; } catch (_) { return {}; }
   })());
@@ -20,6 +21,15 @@
     try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch (_) { /* egal */ }
   }
   const viewOpts = () => ({ speed: settings.speed, gain: settings.gain, highpass: settings.highpass, notch: settings.notch });
+
+  // Messsituation: bestimmt Bewertung der Herzfrequenz, DFA-Einordnung und Vergleich im Verlauf
+  const SITUATIONS = { liegend: 'Ruhe liegend', sitzend: 'Ruhe sitzend', belastung: 'Belastung' };
+  const isRest = s => s === 'liegend' || s === 'sitzend';
+
+  // Auswertung einer gespeicherten Aufnahme
+  const analyzeRec = (data, meta) => EkgAnalysis.analyze(data.ecg, data.fs, {
+    ref: { rr: data.rr, rrT: data.rrT }, gaps: data.gaps, situation: meta.situation
+  });
 
   /* ---------- Zustand ---------- */
   let store = null;
@@ -33,6 +43,8 @@
   let liveAbs = 0;          // empfangene Werte seit live.clear() – gleiche Zählung wie im Live-Chart
   let liveMarkers = [];     // erkannte Extraschläge [{ abs, type }]
   let liveCounts = { S: 0, V: 0 };
+  let liveAf = false;       // Vorhofflimmer-Muster in den letzten 2 min → keine HRV-Werte live
+  let lastEcgWall = 0;      // Empfangszeit des letzten EKG-Pakets (ms)
   let analysisTimer = 0;
   let rec = null;           // laufende Aufnahme
   let current = null;       // geöffnete Aufnahme
@@ -80,6 +92,7 @@
     $('btnRecord').classList.toggle('active', !!rec);
     $('btnRecordLabel').textContent = rec ? 'Aufnahme beenden' : 'Aufnahme starten';
     $('selDuration').disabled = !!rec;
+    $('selSituation').disabled = !!rec;
   }
 
   function resetLiveValues() {
@@ -87,6 +100,8 @@
     $('valSignal').textContent = 'ms';
     $('valDfaZone').textContent = ' ';
     liveBeats = [];
+    liveAf = false;
+    lastEcgWall = 0;
     $('battery').hidden = true;
     $('contact').hidden = true;
     resetLiveAnalysis();
@@ -135,9 +150,10 @@
     const now = Date.now() / 1000;
     const rr2 = liveBeats.filter(b => now - b.t <= 120).map(b => b.rr);
     const irr = rr2.length >= EkgAnalysis.AF_MIN_BEATS ? EkgAnalysis.irregularity(rr2) : null;
+    liveAf = !!(irr && irr.af);
     const rh = $('liveRhythm');
-    rh.textContent = irr && irr.af ? 'unregelmäßig (VHF-Muster?)' : LIVE_RHYTHM[res.rhythm.label.code];
-    rh.dataset.level = irr && irr.af ? 'warn' : '';
+    rh.textContent = liveAf ? 'unregelmäßig (VHF-Muster?)' : LIVE_RHYTHM[res.rhythm.label.code];
+    rh.dataset.level = liveAf ? 'warn' : '';
     const ect = liveCounts.S + liveCounts.V;
     $('liveEctopic').textContent = ect ? `${liveCounts.S} × S · ${liveCounts.V} × V` : 'keine';
     $('liveEctopic').dataset.level = ect ? 'info' : '';
@@ -159,25 +175,59 @@
     const beats = liveBeats.filter(b => now - b.t <= 120);
     const span = beats.length ? now - beats[0].t : 0;
     const ready = span >= 115 && beats.length >= 90;
-    const r = ready ? HrvX.dfaOf(beats.map(b => b.rr)) : null;
-    const zone = r && HrvX.dfaZone(r.a1);
+    const r = ready && !liveAf ? HrvX.dfaOf(beats.map(b => b.rr)) : null;
     $('valDfa').textContent = r && r.a1 != null ? de(r.a1, 2) : '–';
-    $('valDfaZone').textContent = zone ? zone.text
-      : (beats.length ? `ab 2 min (noch ${Math.max(0, Math.ceil(120 - span))} s)` : ' ');
+    let text;
+    if (!beats.length) text = ' ';
+    else if (liveAf) text = 'bei unregelmäßigem Rhythmus nicht aussagekräftig';
+    else if (!ready) text = `ab 2 min (noch ${Math.max(0, Math.ceil(120 - span))} s)`;
+    else if (r.tooMany) text = `zu viele Artefakte (${Math.round(r.share * 100)} %)`;
+    else if (settings.situation !== 'belastung') text = `in Ruhe um 1 üblich · Artefakte ${Math.round(r.share * 100)} %`;
+    else {
+      const zone = HrvX.dfaZone(r.a1);
+      text = `${zone ? zone.text : ''} · Artefakte ${Math.round(r.share * 100)} %`;
+    }
+    $('valDfaZone').textContent = text;
   }
 
   /* ---------- Handler für Gurt bzw. Demo ---------- */
   const handlers = {
     onEcg(samples, info) {
+      const nowMs = Date.now();
+      // Verlorene Werte laut Zeitstempel des Gurts – höchstens so viele, wie seit dem letzten Paket
+      // Zeit vergangen ist (sonst eher ein Zeitstempel-Sprung)
+      const wallGap = lastEcgWall ? Math.round(((nowMs - lastEcgWall) / 1000 + 1) * FS) : 0;
+      let lost = Math.min(info.lost || 0, wallGap);
+      lastEcgWall = nowMs;
+      // Nach einer Wiederverbindung: Länge der Unterbrechung aus der Uhrzeit schätzen
+      if (rec && rec.awaitGap) {
+        rec.awaitGap = false;
+        const missing = wallGap - FS - samples.length;
+        if (missing > FS / 4) {
+          lost = Math.max(lost, missing);
+          rec.rrElapsed += missing / FS;   // RR-Zeitachse mitführen (während der Lücke keine RR-Werte)
+        }
+      }
+      lost = Math.min(lost, MAX_GAP_S * FS);
       const out = new Float32Array(samples.length);
       for (let i = 0; i < samples.length; i++) out[i] = liveFilter.process(samples[i]);
       live.push(out);
+      // Live-Auswertung nicht über eine Lücke hinweg
+      if (lost) liveRaw = [];
       for (let i = 0; i < samples.length; i++) liveRaw.push(samples[i]);
       liveAbs += samples.length;
       if (liveRaw.length > LIVE_ANALYSIS_S * FS) liveRaw.splice(0, liveRaw.length - LIVE_ANALYSIS_S * FS);
-      if (info.lost) $('valSignal').textContent = `ms · ${info.lost} Werte verloren`;
+      if (lost) $('valSignal').textContent = `ms · ${lost} Werte verloren`;
       if (rec) {
-        rec.lost += info.lost || 0;
+        if (lost) {
+          // Lücke auffüllen (letzter Wert) und merken, statt die Kurve zusammenzuschieben –
+          // so stimmt die Zeitachse, und die Auswertung lässt die Stelle aus
+          rec.lost += lost;
+          const n = Math.min(lost, rec.maxSamples - rec.ecg.length);
+          const fill = rec.ecg.length ? rec.ecg[rec.ecg.length - 1] : 0;
+          if (n > 0) rec.gaps.push({ start: rec.ecg.length, len: n });
+          for (let i = 0; i < n; i++) rec.ecg.push(fill);
+        }
         const room = rec.maxSamples - rec.ecg.length;
         for (let i = 0; i < Math.min(room, samples.length); i++) rec.ecg.push(samples[i]);
         if (rec.ecg.length >= rec.maxSamples) stopRecording();
@@ -204,7 +254,7 @@
       }
       if (rr.length) $('valRr').textContent = Math.round(rr[rr.length - 1]);
       liveBeats = liveBeats.filter(b => now - b.t <= 180);
-      const s = Hrv.compute(liveBeats.filter(b => now - b.t <= 60).map(b => b.rr));
+      const s = liveAf ? null : Hrv.compute(liveBeats.filter(b => now - b.t <= 60).map(b => b.rr));
       $('valRmssd').textContent = s && s.rmssd != null ? Math.round(s.rmssd) : '–';
       updateLiveDfa();
     },
@@ -223,7 +273,7 @@
       connected = false;
       if (!manual && wasConnected && source && await source.reconnect()) {
         connected = true;
-        if (rec) rec.interrupted = true;
+        if (rec) { rec.interrupted = true; rec.awaitGap = true; }
         setStatus(rec ? 'Aufnahme läuft' : `Verbunden: ${source.name}`, rec ? 'recording' : 'connected');
         updateButtons();
         return;
@@ -280,8 +330,9 @@
     rec = {
       startTime: Date.now(),
       device: source.name,
+      situation: settings.situation,
       maxSamples: settings.duration * FS,
-      ecg: [], rr: [], rrT: [], rrElapsed: 0, lost: 0
+      ecg: [], rr: [], rrT: [], rrElapsed: 0, lost: 0, gaps: []
     };
     if (navigator.wakeLock) navigator.wakeLock.request('screen').then(w => { wakeLock = w; }).catch(() => {});
     timerHandle = setInterval(updateTimer, 250);
@@ -322,18 +373,22 @@
     setStatus('Speichern und auswerten …', 'busy');
     const stats = Hrv.compute(r.rr);
     const ecg = Int32Array.from(r.ecg);
-    const data = { fs: FS, ecg, rr: Float32Array.from(r.rr), rrT: Float32Array.from(r.rrT) };
-    const ana = EkgAnalysis.analyze(ecg, FS, { ref: { rr: data.rr, rrT: data.rrT } });
+    const data = { fs: FS, ecg, rr: Float32Array.from(r.rr), rrT: Float32Array.from(r.rrT), gaps: r.gaps };
     const meta = {
       startTime: r.startTime,
       duration,
       device: r.device,
+      situation: r.situation
+    };
+    const ana = analyzeRec(data, meta);
+    const af = !!(ana && ana.rhythm.af);
+    Object.assign(meta, {
       meanHR: stats ? stats.meanHR : null,
-      rmssd: stats ? stats.rmssd : null,
+      rmssd: stats && !af ? stats.rmssd : null,
       analysis: ana ? { level: ana.level, ectopic: ana.counts.S + ana.counts.V } : null,
       lost: r.lost,
       note: opts.reason || (r.interrupted ? 'Verbindung kurz unterbrochen' : '')
-    };
+    });
     meta.metrics = Trends.computeMetrics({ meta, data }, { ana });
     const id = await store.save(meta, data);
     if (connected) setStatus(`Verbunden: ${r.device}`, 'connected'); else setStatus('Nicht verbunden', 'idle');
@@ -364,8 +419,9 @@
       const dot = li.querySelector('.level-dot');
       if (m.analysis) dot.dataset.level = m.analysis.level; else dot.remove();
       li.querySelector('.rec-date').append(new Date(m.startTime).toLocaleString('de-DE'));
+      const sit = SITUATIONS[m.situation] ? ` · ${SITUATIONS[m.situation]}` : '';
       li.querySelector('.rec-meta').textContent =
-        `${EkgExport.fmtDuration(m.duration)} · ${hr}${rmssd}${es}${m.note ? ' · ' + m.note : ''}`;
+        `${EkgExport.fmtDuration(m.duration)}${sit} · ${hr}${rmssd}${es}${m.note ? ' · ' + m.note : ''}`;
       li.querySelector('[data-act="open"]').onclick = () => openRecording(m.id);
       li.querySelector('[data-act="del"]').onclick = async () => {
         if (!confirm('Diese Aufnahme wirklich löschen?')) return;
@@ -382,26 +438,45 @@
     const r = await store.get(id);
     if (!r) return;
     const { data, meta } = r;
-    const analysis = EkgAnalysis.analyze(data.ecg, data.fs, { ref: { rr: data.rr, rrT: data.rrT } });
+    const analysis = analyzeRec(data, meta);
     current = {
       ...r,
       stats: Hrv.compute(Array.from(data.rr)),
       analysis,
+      // Bei Vorhofflimmer-Muster ist HRV nicht aussagekräftig
+      hrvBlocked: !!(analysis && analysis.rhythm.af),
       hrvx: {
         freq: HrvX.frequency(data.rr, data.rrT),
         pc: HrvX.poincare(data.rr),
         si: HrvX.stressIndex(data.rr),
         dfa: HrvX.dfaOf(data.rr)
-      }
+      },
+      norm: await personalNorm(meta)
     };
     $('reviewTitle').textContent = `Aufnahme vom ${new Date(meta.startTime).toLocaleString('de-DE')}`;
     $('reviewNote').value = meta.note || '';
+    $('reviewSituation').value = meta.situation || '';
     showTab('aufnahmen');
     renderStats();
     renderAnalysis();
     renderHrvx();
     showReviewData();
     $('review').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  // Persönlicher Normalbereich (Mittelwert ± 1 SD) aus mindestens 5 anderen Ruhe-Aufnahmen
+  // derselben Lage – wie im Verlauf
+  async function personalNorm(meta) {
+    if (!isRest(meta.situation) || !trendView) return null;
+    const others = (await store.list()).filter(m => m.id !== meta.id && m.situation === meta.situation && Trends.include(m));
+    await trendView.backfill(others);
+    const ok = others.filter(m => m.metrics && m.metrics.hr != null && m.metrics.rmssd != null);
+    if (ok.length < 5) return null;
+    const band = vals => {
+      const m = vals.reduce((a, b) => a + b, 0) / vals.length;
+      return { m, sd: Math.sqrt(vals.reduce((a, v) => a + (v - m) ** 2, 0) / (vals.length - 1)) };
+    };
+    return { n: ok.length, hr: band(ok.map(m => m.metrics.hr)), rmssd: band(ok.map(m => m.metrics.rmssd)) };
   }
 
   function showReviewData() {
@@ -438,7 +513,7 @@
     }
   }
 
-  const QUALITY_NAMES = { flat: 'kein Signal', motion: 'Bewegung', noise: 'Störung' };
+  const QUALITY_NAMES = { flat: 'kein Signal', motion: 'Bewegung', noise: 'Störung', gap: 'Übertragungslücke' };
 
   function renderAnalysis() {
     const a = current.analysis;
@@ -485,6 +560,17 @@
   }
 
   function renderHrvx() {
+    const { meta, stats, hrvBlocked, norm } = current;
+    if (hrvBlocked) {
+      fillDl($('hrvxRows'), ['LF', 'HF', 'LF/HF', 'SD1 / SD2', 'Stress-Index (√SI)', 'DFA α1'].map(k => [k, '–']));
+      psdChart.setData(null, 'Nicht berechnet (unregelmäßiger Rhythmus)');
+      poincareChart.setData(null, 'Nicht berechnet (unregelmäßiger Rhythmus)');
+      fillFindings($('hrvxNotes'), [{
+        level: 'info',
+        text: 'HRV-Werte nicht berechnet: Bei unregelmäßigem Rhythmus (Muster wie bei Vorhofflimmern) sind sie nicht aussagekräftig.'
+      }]);
+      return;
+    }
     const { freq, pc, si, dfa } = current.hrvx;
     const zone = HrvX.dfaZone(dfa.a1);
     fillDl($('hrvxRows'), [
@@ -502,29 +588,49 @@
     poincareChart.setData(pc);
 
     const notes = [];
+    // Vergleich mit dem persönlichen Normalbereich (nur Ruhe, ab 2 min wie im Verlauf)
+    if (norm && stats && meta.duration >= 120) {
+      const hrHigh = stats.meanHR > norm.hr.m + norm.hr.sd;
+      const rmssdLow = stats.rmssd < norm.rmssd.m - norm.rmssd.sd;
+      if (hrHigh && rmssdLow) {
+        notes.push({ level: 'info', text: `Ruhe-Herzfrequenz höher (${de(stats.meanHR)} statt Ø ${de(norm.hr.m)} /min) und RMSSD niedriger ` +
+          `(${de(stats.rmssd)} statt Ø ${de(norm.rmssd.m)} ms) als dein Normalbereich aus ${norm.n} Aufnahmen „${SITUATIONS[meta.situation]}“ – ` +
+          'passt oft zu beginnendem Infekt, Übertraining, Schlafmangel oder Stress.' });
+      }
+    }
     if (!freq) notes.push({ level: 'info', text: 'Frequenzanalyse ab 1 Minute sauberer Daten; LF und LF/HF erst ab 2 Minuten (Task Force 1996). Für Vergleiche untereinander 5 Minuten empfohlen.' });
     else if (!freq.lfReliable) notes.push({ level: 'info', text: 'Aufnahme unter 2 Minuten – LF und LF/HF sind noch nicht aussagekräftig.' });
     if (freq && freq.lfReliable) {
       notes.push({ level: 'info', text: 'LF/HF hängt stark von der Atmung ab: Bei langsamer Atmung (unter ca. 9 Atemzügen/min) liegt die Atemschwankung im LF-Band. Als „Stressbalance“ ist LF/HF wissenschaftlich umstritten.' });
     }
-    if (dfa.a1 != null) {
-      notes.push({ level: 'ok', text: `DFA α1 ${de(dfa.a1, 2)} – bei Belastung: ${zone.text}. In Ruhe sind Werte um 1 normal; die Schwellen (0,75 / 0,5) gelten nur bei Ausdauerbelastung.` });
+    if (dfa.tooMany) {
+      notes.push({ level: 'info', text: `DFA α1 nicht angegeben: ${de(dfa.share * 100)} % der RR-Intervalle mussten korrigiert werden – ` +
+        'über 5 % verfälscht die Korrektur den Wert (Rogers et al. 2021).' });
+    } else if (dfa.a1 != null) {
+      const text = meta.situation === 'belastung'
+        ? `DFA α1 ${de(dfa.a1, 2)} – ${zone.text} (Schwellen 0,75 / 0,5 nach Rogers & Gronwald; gelten bei Ausdauerbelastung).`
+        : isRest(meta.situation)
+          ? `DFA α1 ${de(dfa.a1, 2)} – in Ruhe sind Werte um 1 üblich; die Schwellen (0,75 / 0,5) gelten nur bei Ausdauerbelastung.`
+          : `DFA α1 ${de(dfa.a1, 2)} – bei Belastung: ${zone.text}. In Ruhe sind Werte um 1 üblich; die Schwellen (0,75 / 0,5) gelten nur bei Ausdauerbelastung.`;
+      notes.push({ level: 'ok', text });
     }
     if (si != null) notes.push({ level: si > 15 ? 'info' : 'ok', text: `Stress-Index ${de(si, 1)} – in Ruhe typisch etwa 7–12; höhere Werte sprechen für mehr Sympathikus-Aktivität (Anspannung, Belastung, Müdigkeit).` });
     fillFindings($('hrvxNotes'), notes);
   }
 
   function renderStats() {
-    const { meta, stats } = current;
+    const { meta, stats, hrvBlocked } = current;
     const f = (v, d = 0) => (v == null ? '–' : v.toFixed(d).replace('.', ','));
+    const hrv = stats && !hrvBlocked;
     const rows = [
       ['Dauer', EkgExport.fmtDuration(meta.duration)],
+      ['Situation', SITUATIONS[meta.situation] || 'keine Angabe'],
       ['Ø Herzfrequenz', stats ? `${f(stats.meanHR)} /min` : '–'],
       ['Min / Max', stats ? `${f(stats.minHR)} / ${f(stats.maxHR)} /min` : '–'],
-      ['SDNN', stats ? `${f(stats.sdnn)} ms` : '–'],
-      ['RMSSD', stats ? `${f(stats.rmssd)} ms` : '–'],
-      ['pNN50', stats ? `${f(stats.pnn50, 1)} %` : '–'],
-      ['Schläge / Artefakte', stats ? `${stats.beats} / ${stats.artifacts}` : '–'],
+      ['SDNN', hrv ? `${f(stats.sdnn)} ms` : '–'],
+      ['RMSSD', hrv ? `${f(stats.rmssd)} ms` : '–'],
+      ['pNN50', hrv ? `${f(stats.pnn50, 1)} %` : '–'],
+      ['Schläge / korrigiert', stats ? `${stats.beats} / ${stats.artifacts} (${f(stats.artifactShare * 100, 1)} %)` : '–'],
       ['Gerät', meta.device]
     ];
     if (meta.lost) rows.push(['Verlorene Werte', String(meta.lost)]);
@@ -556,6 +662,7 @@
     $('rngScale').value = settings.pxPerMm;
     $('selCsv').value = settings.csv;
     $('selDuration').value = settings.duration;
+    $('selSituation').value = settings.situation;
 
     document.querySelectorAll('.tabs [data-tab]').forEach(b => { b.onclick = () => showTab(b.dataset.tab); });
 
@@ -564,6 +671,7 @@
     $('rngScale').oninput = e => { settings.pxPerMm = +e.target.value; saveSettings(); applyView(); };
     $('selCsv').onchange = e => { settings.csv = e.target.value; saveSettings(); };
     $('selDuration').onchange = e => { settings.duration = +e.target.value; saveSettings(); };
+    $('selSituation').onchange = e => { settings.situation = e.target.value; saveSettings(); dfaShownAt = 0; };
     const onFilter = () => {
       settings.highpass = $('chkHp').checked;
       settings.notch = $('chkNotch').checked;
@@ -593,6 +701,21 @@
       current.meta.note = e.target.value.trim();
       await store.updateMeta(current.meta);
       renderList();
+    };
+    // Situation nachträglich ändern (z. B. für ältere Aufnahmen) – Auswertung neu aufbauen
+    $('reviewSituation').onchange = async e => {
+      if (!current) return;
+      const t = review.currentTime;
+      current.meta.situation = e.target.value || undefined;
+      await store.updateMeta(current.meta);
+      await openRecording(current.meta.id);
+      const a = current.analysis;
+      if (a) {
+        current.meta.analysis = { level: a.level, ectopic: a.counts.S + a.counts.V };
+        await store.updateMeta(current.meta);
+      }
+      await renderList();
+      review.scrollToTime(t);
     };
     $('btnCsvEcg').onclick = () => current && EkgExport.ecgCsv(current, settings.csv);
     $('btnCsvRr').onclick = () => current && EkgExport.rrCsv(current, settings.csv);

@@ -22,9 +22,11 @@
     S: [[-0.15, 90, 0.022], ...QRST],                                   // vorzeitig, andere P-Welle
     V: [[0.0, 900, 0.03], [0.07, -700, 0.035], [0.30, -380, 0.07]]      // breit, ohne P, T gegensinnig
   };
-  // Zum Vorführen der Auswertung: gelegentliche Extraschläge und eine kurze Bewegungsstörung
+  // Zum Vorführen der Auswertung: gelegentliche Extraschläge, eine kurze Bewegungsstörung und
+  // selten ein verlorenes Datenpaket
   const SVES_EVERY = 17, VES_EVERY = 29;
   const ARTEFACT_PERIOD = 45, ARTEFACT_START = 30, ARTEFACT_LEN = 2.5;
+  const LOST_EVERY = 170;        // etwa alle 95 s ein verlorenes Paket
 
   function gaussNoise() {
     return Math.sqrt(-2 * Math.log(Math.random() || 1e-9)) * Math.cos(2 * Math.PI * Math.random());
@@ -109,7 +111,11 @@
         samples[i] = this._sample(this.t);
         this.t += 1 / FS;
       }
-      this.h.onEcg(samples, { lost: 0 });
+      // Gelegentlich geht ein Paket verloren (wie bei Bluetooth-Störungen) → Übertragungslücke
+      this._frameNo = (this._frameNo || 0) + 1;
+      if (this._frameNo % LOST_EVERY === 0) { this._lost = FRAME; return; }
+      this.h.onEcg(samples, { lost: this._lost || 0 });
+      this._lost = 0;
     }
 
     _emitHr() {

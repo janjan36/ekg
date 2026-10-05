@@ -213,6 +213,23 @@
   }
 
   /* ---------- Scrollbare Ansicht einer gespeicherten Aufnahme ---------- */
+  const CAL_MM = 10;
+
+  // Eichzacke 1 mV, 200 ms breit, wie auf EKG-Papier; x0 = linker Rand des 10-mm-Bereichs
+  function drawCalPulse(ctx, x0, midY, mm, scale, colors) {
+    const top = midY - 1000 * scale;
+    ctx.strokeStyle = colors.trace;
+    ctx.lineWidth = 1.4;
+    ctx.beginPath();
+    ctx.moveTo(x0 + 1 * mm, midY); ctx.lineTo(x0 + 2.5 * mm, midY); ctx.lineTo(x0 + 2.5 * mm, top);
+    ctx.lineTo(x0 + 7.5 * mm, top); ctx.lineTo(x0 + 7.5 * mm, midY); ctx.lineTo(x0 + 9 * mm, midY);
+    ctx.stroke();
+    ctx.fillStyle = colors.label;
+    ctx.font = '11px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('1 mV', x0 + 5 * mm, top - 4);
+    ctx.textAlign = 'start';
+  }
   class ReviewEcgChart {
     constructor(scrollEl, innerEl, canvas, fs) {
       this.scrollEl = scrollEl;
@@ -240,7 +257,9 @@
     }
 
     get pxPerSecond() { return this.speed * this.pxPerMm; }
-    get currentTime() { return (this.scrollEl.scrollLeft + this.w / 2) / this.pxPerSecond; }
+    // Platz links vor dem EKG für die 1-mV-Eichzacke
+    get padPx() { return CAL_MM * this.pxPerMm; }
+    get currentTime() { return (this.scrollEl.scrollLeft + this.w / 2 - this.padPx) / this.pxPerSecond; }
 
     setData(values) {
       this.data = values;
@@ -265,7 +284,7 @@
     }
 
     scrollToTime(t) {
-      this.scrollEl.scrollLeft = t * this.pxPerSecond - this.w / 2;
+      this.scrollEl.scrollLeft = t * this.pxPerSecond + this.padPx - this.w / 2;
       this.render();
     }
 
@@ -273,7 +292,7 @@
       this.w = this.scrollEl.clientWidth;
       this.h = this.innerEl.clientHeight;
       if (!this.w || !this.h) return;
-      const total = this.data.length / this.fs * this.pxPerSecond;
+      const total = this.data.length / this.fs * this.pxPerSecond + this.padPx;
       this.innerEl.style.width = Math.max(this.w, Math.ceil(total)) + 'px';
       this.canvas.style.width = this.w + 'px';
       this.ctx = setupCanvas(this.canvas, this.w, this.h);
@@ -288,12 +307,14 @@
     render() {
       if (!this.ctx) return;
       const { ctx, w, h, data, fs } = this;
-      const off = this.scrollEl.scrollLeft;
+      const pad = this.padPx;
+      const off = this.scrollEl.scrollLeft - pad;   // Bildschirm-x = Datenposition − off
       const pps = this.pxPerSecond / fs;
       const midY = h / 2;
       const scale = this.gain * this.pxPerMm / 1000;
 
-      drawGrid(ctx, w, h, this.pxPerMm, this.colors, off);
+      drawGrid(ctx, w, h, this.pxPerMm, this.colors, off + pad);
+      if (off < 0) drawCalPulse(ctx, -off - pad, midY, this.pxPerMm, scale, this.colors);
 
       const i0 = Math.max(0, Math.floor(off / pps) - 1);
       const i1 = Math.min(data.length, Math.ceil((off + w) / pps) + 1);
@@ -322,7 +343,7 @@
       ctx.font = '11px system-ui, sans-serif';
       const pxS = this.pxPerSecond;
       const every = pxS < 60 ? 5 : 1;
-      for (let s = Math.ceil(off / pxS / every) * every; s * pxS <= off + w; s += every) {
+      for (let s = Math.max(0, Math.ceil(off / pxS / every) * every); s * pxS <= off + w; s += every) {
         ctx.fillText(`${s} s`, s * pxS - off + 3, h - 5);
       }
 
