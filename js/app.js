@@ -22,13 +22,13 @@
   }
   const viewOpts = () => ({ speed: settings.speed, gain: settings.gain, highpass: settings.highpass, notch: settings.notch });
 
-  // Messsituation: bestimmt Bewertung der Herzfrequenz, DFA-Einordnung und Vergleich im Verlauf
-  const SITUATIONS = { liegend: 'Ruhe liegend', sitzend: 'Ruhe sitzend', belastung: 'Belastung' };
+  // Ruhe-EKG: die Körperlage bestimmt, welche Aufnahmen im Verlauf vergleichbar sind
+  const SITUATIONS = { liegend: 'Ruhe liegend', sitzend: 'Ruhe sitzend' };
   const isRest = s => s === 'liegend' || s === 'sitzend';
 
   // Auswertung einer gespeicherten Aufnahme
   const analyzeRec = (data, meta) => EkgAnalysis.analyze(data.ecg, data.fs, {
-    ref: { rr: data.rr, rrT: data.rrT }, gaps: data.gaps, situation: meta.situation
+    ref: { rr: data.rr, rrT: data.rrT }, gaps: data.gaps, symptoms: meta.symptoms
   });
 
   /* ---------- Zustand ---------- */
@@ -37,7 +37,6 @@
   let connected = false;
   let liveFilter = new EkgFilters.FilterChain(FS, settings);
   let liveBeats = [];       // { t: Wanduhr in s, rr } der letzten 3 min
-  let dfaShownAt = 0;
   const LIVE_ANALYSIS_S = 30;
   let liveRaw = [];         // Rohdaten der letzten 30 s für die Live-Auswertung
   let liveAbs = 0;          // empfangene Werte seit live.clear() – gleiche Zählung wie im Live-Chart
@@ -93,12 +92,14 @@
     $('btnRecordLabel').textContent = rec ? 'Aufnahme beenden' : 'Aufnahme starten';
     $('selDuration').disabled = !!rec;
     $('selSituation').disabled = !!rec;
+    $('btnSymptom').hidden = !rec;
+    $('btnSymptomLabel').textContent = rec && rec.symptoms.length
+      ? `Symptom markieren (${rec.symptoms.length})` : 'Symptom markieren';
   }
 
   function resetLiveValues() {
-    ['valHr', 'valRr', 'valRmssd', 'valDfa'].forEach(id => { $(id).textContent = '–'; });
+    ['valHr', 'valRr', 'valRmssd'].forEach(id => { $(id).textContent = '–'; });
     $('valSignal').textContent = 'ms';
-    $('valDfaZone').textContent = ' ';
     liveBeats = [];
     liveAf = false;
     lastEcgWall = 0;
@@ -166,28 +167,16 @@
       : '–';
   }
 
-  // DFA α1 über die letzten 2 min (fürs Training), alle 5 s
-  function updateLiveDfa() {
-    const now = Date.now() / 1000;
-    if (now - dfaShownAt < 5) return;
-    dfaShownAt = now;
-    // Wie in den Validierungsstudien: volles 2-min-Fenster, mindestens 90 Schläge
-    const beats = liveBeats.filter(b => now - b.t <= 120);
-    const span = beats.length ? now - beats[0].t : 0;
-    const ready = span >= 115 && beats.length >= 90;
-    const r = ready && !liveAf ? HrvX.dfaOf(beats.map(b => b.rr)) : null;
-    $('valDfa').textContent = r && r.a1 != null ? de(r.a1, 2) : '–';
-    let text;
-    if (!beats.length) text = ' ';
-    else if (liveAf) text = 'bei unregelmäßigem Rhythmus nicht aussagekräftig';
-    else if (!ready) text = `ab 2 min (noch ${Math.max(0, Math.ceil(120 - span))} s)`;
-    else if (r.tooMany) text = `zu viele Artefakte (${Math.round(r.share * 100)} %)`;
-    else if (settings.situation !== 'belastung') text = `in Ruhe um 1 üblich · Artefakte ${Math.round(r.share * 100)} %`;
-    else {
-      const zone = HrvX.dfaZone(r.a1);
-      text = `${zone ? zone.text : ''} · Artefakte ${Math.round(r.share * 100)} %`;
-    }
-    $('valDfaZone').textContent = text;
+  // Symptom-Taste: markiert die aktuelle Stelle der Aufnahme (ESC 2024: symptombezogener ≥ 30-s-Streifen
+  // ist ärztlich verwertbar)
+  function markSymptom() {
+    if (!rec) return;
+    const t = rec.ecg.length / FS;
+    if (rec.symptoms.some(s => Math.abs(s - t) < 2)) return;   // Doppeltipp
+    rec.symptoms.push(t);
+    liveMarkers.push({ abs: liveAbs, type: 'M' });
+    live.setMarkers(liveMarkers);
+    updateButtons();
   }
 
   /* ---------- Handler für Gurt bzw. Demo ---------- */
@@ -256,7 +245,6 @@
       liveBeats = liveBeats.filter(b => now - b.t <= 180);
       const s = liveAf ? null : Hrv.compute(liveBeats.filter(b => now - b.t <= 60).map(b => b.rr));
       $('valRmssd').textContent = s && s.rmssd != null ? Math.round(s.rmssd) : '–';
-      updateLiveDfa();
     },
 
     onBattery(level) {
@@ -332,7 +320,7 @@
       device: source.name,
       situation: settings.situation,
       maxSamples: settings.duration * FS,
-      ecg: [], rr: [], rrT: [], rrElapsed: 0, lost: 0, gaps: []
+      ecg: [], rr: [], rrT: [], rrElapsed: 0, lost: 0, gaps: [], symptoms: []
     };
     if (navigator.wakeLock) navigator.wakeLock.request('screen').then(w => { wakeLock = w; }).catch(() => {});
     timerHandle = setInterval(updateTimer, 250);
@@ -378,7 +366,8 @@
       startTime: r.startTime,
       duration,
       device: r.device,
-      situation: r.situation
+      situation: r.situation,
+      symptoms: r.symptoms
     };
     const ana = analyzeRec(data, meta);
     const af = !!(ana && ana.rhythm.af);
@@ -407,6 +396,7 @@
       const hr = m.meanHR ? `Ø ${Math.round(m.meanHR)} /min` : 'keine HF';
       const rmssd = m.rmssd != null ? ` · RMSSD ${Math.round(m.rmssd)} ms` : '';
       const es = m.analysis && m.analysis.ectopic ? ` · ${m.analysis.ectopic} Extraschl.` : '';
+      const sy = m.symptoms && m.symptoms.length ? ` · ${m.symptoms.length} Symptom${m.symptoms.length > 1 ? 'e' : ''}` : '';
       li.innerHTML = `
         <div class="rec-main">
           <div class="rec-date"><span class="level-dot inline"></span></div>
@@ -421,7 +411,7 @@
       li.querySelector('.rec-date').append(new Date(m.startTime).toLocaleString('de-DE'));
       const sit = SITUATIONS[m.situation] ? ` · ${SITUATIONS[m.situation]}` : '';
       li.querySelector('.rec-meta').textContent =
-        `${EkgExport.fmtDuration(m.duration)}${sit} · ${hr}${rmssd}${es}${m.note ? ' · ' + m.note : ''}`;
+        `${EkgExport.fmtDuration(m.duration)}${sit} · ${hr}${rmssd}${es}${sy}${m.note ? ' · ' + m.note : ''}`;
       li.querySelector('[data-act="open"]').onclick = () => openRecording(m.id);
       li.querySelector('[data-act="del"]').onclick = async () => {
         if (!confirm('Diese Aufnahme wirklich löschen?')) return;
@@ -453,6 +443,15 @@
       },
       norm: await personalNorm(meta)
     };
+    // Ältere Aufnahmen: Ampel und Extraschlag-Zahl in der Liste an die aktuelle Auswertung angleichen
+    if (analysis) {
+      const summary = { level: analysis.level, ectopic: analysis.counts.S + analysis.counts.V };
+      if (!meta.analysis || meta.analysis.level !== summary.level || meta.analysis.ectopic !== summary.ectopic) {
+        meta.analysis = summary;
+        await store.updateMeta(meta);
+        renderList();
+      }
+    }
     $('reviewTitle').textContent = `Aufnahme vom ${new Date(meta.startTime).toLocaleString('de-DE')}`;
     $('reviewNote').value = meta.note || '';
     $('reviewSituation').value = meta.situation || '';
@@ -485,11 +484,18 @@
     review.setScale({ speed: settings.speed, gain: settings.gain, pxPerMm: settings.pxPerMm });
     review.setData(EkgFilters.filtfilt(data.ecg, data.fs, settings));
     tacho.setData(Array.from(data.rrT), Array.from(data.rr), stats ? stats.valid : [], meta.duration);
-    const a = current.analysis;
-    review.setAnnotations(a ? {
-      beats: a.beats.filter(b => 'SVA'.includes(b.type)),
-      bad: a.quality.segments
-    } : null);
+    review.setAnnotations(annotationsOf(current));
+  }
+
+  // Markierungen für EKG-Ansicht und PDF: Extraschläge, Symptome (M), gestörte Abschnitte
+  function annotationsOf(cur) {
+    const a = cur.analysis;
+    const fs = cur.data.fs;
+    const symptoms = (cur.meta.symptoms || []).map(t => ({ i: Math.round(t * fs), type: 'M' }));
+    return {
+      beats: (a ? a.beats.filter(b => 'SVA'.includes(b.type)) : []).concat(symptoms),
+      bad: a ? a.quality.segments : []
+    };
   }
 
   function fillDl(dl, rows) {
@@ -540,8 +546,9 @@
     $('beatLegend').textContent = t ? `Durchschnittsschlag aus ${a.avgCount} Schlägen` : 'Durchschnittsschlag';
     beatChart.setData(t, a.fs);
 
-    // Ereignisliste: Extraschläge und gestörte Abschnitte
+    // Ereignisliste: Symptome, Extraschläge und gestörte Abschnitte
     const events = [
+      ...(current.meta.symptoms || []).map(t => ({ t, tag: 'M', text: 'Symptom' })),
       ...a.beats.filter(b => 'SVA'.includes(b.type)).map(b => ({ t: b.i / a.fs, tag: b.type, text: EkgAnalysis.TYPE_NAMES[b.type] })),
       ...a.quality.segments.map(s => ({ t: s.start / a.fs, tag: 'U', text: QUALITY_NAMES[s.type] }))
     ].sort((x, y) => x.t - y.t);
@@ -551,7 +558,7 @@
     const MAX = 60;
     for (const e of events.slice(0, MAX)) {
       const b = document.createElement('button');
-      b.innerHTML = `<span class="tag ${e.tag}">${e.tag === 'U' ? '!' : e.tag}</span>`;
+      b.innerHTML = `<span class="tag ${e.tag}">${e.tag === 'U' || e.tag === 'M' ? '!' : e.tag}</span>`;
       b.append(`${e.t.toFixed(1).replace('.', ',')} s ${e.text}`);
       b.onclick = () => review.scrollToTime(e.t);
       wrap.appendChild(b);
@@ -572,7 +579,6 @@
       return;
     }
     const { freq, pc, si, dfa } = current.hrvx;
-    const zone = HrvX.dfaZone(dfa.a1);
     fillDl($('hrvxRows'), [
       ['LF', freq && freq.lfReliable ? `${Math.round(freq.lf)} ms²` : '–'],
       ['HF', freq ? `${Math.round(freq.hf)} ms²` : '–'],
@@ -581,8 +587,7 @@
       ['HF-Gipfel', freq && freq.hfPeak ? `${de(freq.hfPeak, 2)} Hz` : '–'],
       ['SD1 / SD2', pc ? `${de(pc.sd1)} / ${de(pc.sd2)} ms` : '–'],
       ['Stress-Index (√SI)', de(si, 1)],
-      ['DFA α1', dfa.a1 != null ? de(dfa.a1, 2) : '–'],
-      ['DFA α2', dfa.a2 != null ? de(dfa.a2, 2) : '–']
+      ['DFA α1', dfa.a1 != null ? de(dfa.a1, 2) : '–']
     ]);
     psdChart.setData(freq);
     poincareChart.setData(pc);
@@ -607,12 +612,8 @@
       notes.push({ level: 'info', text: `DFA α1 nicht angegeben: ${de(dfa.share * 100)} % der RR-Intervalle mussten korrigiert werden – ` +
         'über 5 % verfälscht die Korrektur den Wert (Rogers et al. 2021).' });
     } else if (dfa.a1 != null) {
-      const text = meta.situation === 'belastung'
-        ? `DFA α1 ${de(dfa.a1, 2)} – ${zone.text} (Schwellen 0,75 / 0,5 nach Rogers & Gronwald; gelten bei Ausdauerbelastung).`
-        : isRest(meta.situation)
-          ? `DFA α1 ${de(dfa.a1, 2)} – in Ruhe sind Werte um 1 üblich; die Schwellen (0,75 / 0,5) gelten nur bei Ausdauerbelastung.`
-          : `DFA α1 ${de(dfa.a1, 2)} – bei Belastung: ${zone.text}. In Ruhe sind Werte um 1 üblich; die Schwellen (0,75 / 0,5) gelten nur bei Ausdauerbelastung.`;
-      notes.push({ level: 'ok', text });
+      notes.push({ level: 'ok', text: `DFA α1 ${de(dfa.a1, 2)} – Kurzzeit-Korrelation der Herzschlag-Abstände (4–16 Schläge); ` +
+        'in Ruhe bei Gesunden meist um 1. Am aussagekräftigsten im Vergleich eigener Aufnahmen.' });
     }
     if (si != null) notes.push({ level: si > 15 ? 'info' : 'ok', text: `Stress-Index ${de(si, 1)} – in Ruhe typisch etwa 7–12; höhere Werte sprechen für mehr Sympathikus-Aktivität (Anspannung, Belastung, Müdigkeit).` });
     fillFindings($('hrvxNotes'), notes);
@@ -662,6 +663,7 @@
     $('rngScale').value = settings.pxPerMm;
     $('selCsv').value = settings.csv;
     $('selDuration').value = settings.duration;
+    if (!SITUATIONS[settings.situation]) settings.situation = 'sitzend';
     $('selSituation').value = settings.situation;
 
     document.querySelectorAll('.tabs [data-tab]').forEach(b => { b.onclick = () => showTab(b.dataset.tab); });
@@ -671,7 +673,8 @@
     $('rngScale').oninput = e => { settings.pxPerMm = +e.target.value; saveSettings(); applyView(); };
     $('selCsv').onchange = e => { settings.csv = e.target.value; saveSettings(); };
     $('selDuration').onchange = e => { settings.duration = +e.target.value; saveSettings(); };
-    $('selSituation').onchange = e => { settings.situation = e.target.value; saveSettings(); dfaShownAt = 0; };
+    $('selSituation').onchange = e => { settings.situation = e.target.value; saveSettings(); };
+    $('btnSymptom').onclick = markSymptom;
     const onFilter = () => {
       settings.highpass = $('chkHp').checked;
       settings.notch = $('chkNotch').checked;
@@ -702,24 +705,20 @@
       await store.updateMeta(current.meta);
       renderList();
     };
-    // Situation nachträglich ändern (z. B. für ältere Aufnahmen) – Auswertung neu aufbauen
+    // Lage nachträglich ändern (z. B. für ältere Aufnahmen) – Vergleich mit dem Normalbereich neu aufbauen
     $('reviewSituation').onchange = async e => {
       if (!current) return;
       const t = review.currentTime;
       current.meta.situation = e.target.value || undefined;
       await store.updateMeta(current.meta);
-      await openRecording(current.meta.id);
-      const a = current.analysis;
-      if (a) {
-        current.meta.analysis = { level: a.level, ectopic: a.counts.S + a.counts.V };
-        await store.updateMeta(current.meta);
-      }
       await renderList();
+      await openRecording(current.meta.id);
       review.scrollToTime(t);
     };
     $('btnCsvEcg').onclick = () => current && EkgExport.ecgCsv(current, settings.csv);
     $('btnCsvRr').onclick = () => current && EkgExport.rrCsv(current, settings.csv);
     $('btnTxtRr').onclick = () => current && EkgExport.rrTxt(current);
+    $('btnEdf').onclick = () => current && EkgExport.edf(current);
     $('btnPdf').onclick = async () => {
       if (!current) return;
       const btn = $('btnPdf');

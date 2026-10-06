@@ -112,13 +112,86 @@
     return `${Math.floor(t / 60)}:${pad(t % 60)} min`;
   }
 
+  /* ---------- EDF+ (European Data Format, z. B. für EDFbrowser) ---------- */
+  // Kanal 1: EKG-Rohdaten in µV (1 µV je Digitalwert, Bereich ±32,7 mV), Datensätze à 1 s.
+  // Kanal 2: „EDF Annotations“ mit Symptomen, Übertragungslücken und automatisch erkannten Extraschlägen.
+  // Keine persönlichen Angaben im Kopf (Patientenfeld „X X X X“ nach EDF+-Norm).
+  const MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+  const field = (v, n) => String(v).replace(/[^\x20-\x7e]/g, '_').slice(0, n).padEnd(n, ' ');
+
+  function edf(rec) {
+    const { meta, data } = rec;
+    const fs = data.fs, n = data.ecg.length;
+    const nRec = Math.ceil(n / fs);
+    const enc = new TextEncoder();
+
+    // Annotationen als TAL (Time-stamped Annotation List): +Beginn[\x15Dauer]\x14Text\x14\x00
+    const ann = [];
+    for (const t of meta.symptoms || []) ann.push({ t, text: 'Symptom' });
+    for (const g of data.gaps || []) ann.push({ t: g.start / fs, d: g.len / fs, text: 'Übertragungslücke' });
+    for (const b of rec.analysis ? rec.analysis.beats : []) {
+      if (b.type === 'S' || b.type === 'V') ann.push({ t: b.i / fs, text: b.type === 'S' ? 'SVES (automatisch)' : 'VES (automatisch)' });
+    }
+    ann.sort((a, b) => a.t - b.t);
+    const tals = ann.map(a => enc.encode(`+${a.t.toFixed(3)}${a.d ? '\x15' + a.d.toFixed(3) : ''}\x14${a.text}\x14\x00`));
+    const total = tals.reduce((s, b) => s + b.length, 0);
+    const maxTal = tals.reduce((m, b) => Math.max(m, b.length), 0);
+    // Platz je Datensatz: Zeitmarke + Durchschnitt + eine längste TAL Reserve (reicht beim Auffüllen der Reihe nach)
+    let annBytes = enc.encode(`+${nRec}\x14\x14\x00`).length + Math.ceil(total / nRec) + maxTal;
+    annBytes += annBytes % 2;
+
+    const d = new Date(meta.startTime);
+    const ns = 2;
+    const both = (a, b, len) => field(a, len) + field(b, len);
+    const head =
+      field('0', 8) +
+      field('X X X X', 80) +
+      field(`Startdate ${pad(d.getDate())}-${MONTHS[d.getMonth()]}-${d.getFullYear()} X X Polar_H10`, 80) +
+      field(`${pad(d.getDate())}.${pad(d.getMonth() + 1)}.${pad(d.getFullYear() % 100)}`, 8) +
+      field(`${pad(d.getHours())}.${pad(d.getMinutes())}.${pad(d.getSeconds())}`, 8) +
+      field(256 * (ns + 1), 8) +
+      field('EDF+C', 44) +
+      field(nRec, 8) +
+      field(1, 8) +
+      field(ns, 4) +
+      both('ECG', 'EDF Annotations', 16) +
+      both('Polar H10 chest strap', '', 80) +
+      both('uV', '', 8) +
+      both(-32768, -1, 8) +
+      both(32767, 1, 8) +
+      both(-32768, -32768, 8) +
+      both(32767, 32767, 8) +
+      both('None (raw H10 data)', '', 80) +
+      both(fs, annBytes / 2, 8) +
+      both('', '', 32);
+
+    const recBytes = 2 * fs + annBytes;
+    const out = new Uint8Array(head.length + nRec * recBytes);
+    for (let i = 0; i < head.length; i++) out[i] = head.charCodeAt(i);
+    const dv = new DataView(out.buffer);
+    let k = 0;
+    for (let r = 0; r < nRec; r++) {
+      let o = head.length + r * recBytes;
+      for (let j = 0; j < fs; j++, o += 2) {
+        const v = data.ecg[Math.min(n - 1, r * fs + j)];   // letzter Datensatz mit dem letzten Wert aufgefüllt
+        dv.setInt16(o, Math.max(-32768, Math.min(32767, Math.round(v))), true);
+      }
+      const end = o + annBytes;
+      const keep = enc.encode(`+${r}\x14\x14\x00`);   // Zeitmarke des Datensatzes (Pflicht)
+      out.set(keep, o);
+      o += keep.length;
+      while (k < tals.length && o + tals[k].length <= end) { out.set(tals[k], o); o += tals[k].length; k++; }
+    }
+    return deliver(fileBase(meta) + '.edf', new Blob([out], { type: 'application/octet-stream' }));
+  }
+
   /* ---------- PDF-Bericht (A4 quer, Millimeter) ---------- */
   const PAGE_W = 297, PAGE_H = 210, MARGIN = 10;
   const STRIP_W = 250;
   const C = {
     minor: '#f2b3b3', major: '#d96b6b', trace: '#000000', bad: '#e3e3e3', text: '#000000',
     muted: '#555555', mark: '#1f6feb',
-    tag: { S: '#1f6feb', V: '#c8102e', A: '#b45309' },
+    tag: { S: '#1f6feb', V: '#c8102e', A: '#b45309', M: '#8250df' },
     level: { ok: '#1a7f37', info: '#b45309', warn: '#c8102e' }
   };
 
@@ -134,7 +207,7 @@
   function drawTag(page, x, y, type) {
     page.fill(C.tag[type]);
     page.rect(x - 1.8, y, 3.6, 3.6);
-    page.text(x, y + 2.75, type, { size: 8, bold: true, color: '#ffffff', align: 'center' });
+    page.text(x, y + 2.75, type === 'M' ? '!' : type, { size: 8, bold: true, color: '#ffffff', align: 'center' });
   }
 
   // Jede Zeile beginnt mit einer Eichzacke 1 mV (200 ms breit) im 8-mm-Vorspann
@@ -232,7 +305,7 @@
     page.text(MARGIN, y, `EKG-Aufzeichnung – ${meta.device}`, { size: 14, bold: true });
     y += 6;
     const filters = [view.highpass && 'Grundlinie 0,5 Hz', view.notch && '50 Hz'].filter(Boolean).join(', ') || 'keine';
-    const situation = { liegend: 'Ruhe liegend', sitzend: 'Ruhe sitzend', belastung: 'Belastung' }[meta.situation];
+    const situation = { liegend: 'Ruhe liegend', sitzend: 'Ruhe sitzend' }[meta.situation];
     page.text(MARGIN, y, `${new Date(meta.startTime).toLocaleString('de-DE')} · Dauer ${fmtDuration(meta.duration)} · ` +
       `${situation ? situation + ' · ' : ''}${view.speed} mm/s · ${view.gain} mm/mV (Eichzacke 1 mV) · ${fs} Hz · Filter: ${filters}` +
       `${meta.note ? ' · Notiz: ' + meta.note : ''}`, { size: 9 });
@@ -280,7 +353,7 @@
         ['QTc ', true], [`${ms(t && t.qtcF)} (Fridericia), ${ms(t && t.qtcB)} (Bazett)`, false]
       ], { size: 9 });
       y += 4.5;
-      const note = 'Markierungen im EKG: S supraventrikulärer, V ventrikulärer Extraschlag (wahrscheinlich), ' +
+      const note = 'Markierungen im EKG: ! markiertes Symptom, S supraventrikulärer, V ventrikulärer Extraschlag (wahrscheinlich), ' +
         'A abweichende Form; grau = gestörter Abschnitt. Zeiten sind Näherungswerte (130 Hz, eine Ableitung).';
       for (const line of global.Pdf.wrap(note, textW, 7.5, false)) {
         page.text(MARGIN, y, line, { size: 7.5, color: C.muted });
@@ -290,9 +363,11 @@
     }
 
     // EKG-Streifen, je 250 mm
-    const ann = ana
-      ? { beats: ana.beats.filter(b => 'SVA'.includes(b.type)), bad: ana.quality.segments }
-      : { beats: [], bad: [] };
+    const symptoms = (meta.symptoms || []).map(t => ({ i: Math.round(t * fs), type: 'M' }));
+    const ann = {
+      beats: (ana ? ana.beats.filter(b => 'SVA'.includes(b.type)) : []).concat(symptoms),
+      bad: ana ? ana.quality.segments : []
+    };
     const rowH = Math.max(20, 3 * view.gain);
     const perRow = Math.round(STRIP_W / view.speed * fs);
     for (let s = 0; s < values.length; s += perRow) {
@@ -317,5 +392,5 @@
     return blob;
   }
 
-  global.EkgExport = { ecgCsv, rrCsv, rrTxt, pdfReport, fmtDuration, IS_IOS };
+  global.EkgExport = { ecgCsv, rrCsv, rrTxt, edf, pdfReport, fmtDuration, IS_IOS };
 })(window);

@@ -14,7 +14,7 @@
     const { data, meta } = rec;
     const stats = global.Hrv.compute(Array.from(data.rr || []));
     const ana = pre.ana !== undefined ? pre.ana
-      : global.EkgAnalysis.analyze(data.ecg, data.fs, { ref: { rr: data.rr, rrT: data.rrT }, gaps: data.gaps, situation: meta.situation });
+      : global.EkgAnalysis.analyze(data.ecg, data.fs, { ref: { rr: data.rr, rrT: data.rrT }, gaps: data.gaps, symptoms: meta.symptoms });
     const af = !!(ana && ana.rhythm.af);
     // HRV nur bei regelmäßigem Grundrhythmus und vergleichbarer Dauer
     const hrv = !af && meta.duration >= HRV_MIN_S;
@@ -34,7 +34,7 @@
   // Im Verlauf nur echte Gurt-Aufnahmen: keine Demo-Daten und keine Aufnahmen aus den früheren
   // geführten Tests (andere Bedingungen, z. B. Aufstehen oder gelenkte Atmung)
   const include = m => !/^Demo/.test(m.device || '') && !m.test;
-  const SITUATION_NAMES = { liegend: 'Ruhe liegend', sitzend: 'Ruhe sitzend', belastung: 'Belastung' };
+  const SITUATION_NAMES = { liegend: 'Ruhe liegend', sitzend: 'Ruhe sitzend' };
 
   const SERIES = [
     { key: 'hr', title: 'Herzfrequenz (Ø)', unit: '/min', decimals: 0 },

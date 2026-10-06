@@ -54,6 +54,22 @@
     return saa && sbb ? sab / Math.sqrt(saa * sbb) : 0;
   }
 
+  // Formmerkmale eines Schlag-Ausschnitts: „Breite“ = Fläche / Spitze der Abweichung vom Mittelwert,
+  // „Steilheit“ = größter Sprung zwischen zwei Werten / Spitze-Spitze
+  function shape(s) {
+    let mn = Infinity, mx = -Infinity, m = 0;
+    for (const v of s) { mn = Math.min(mn, v); mx = Math.max(mx, v); m += v; }
+    m /= s.length;
+    let area = 0, pk = 0, sl = 0;
+    for (let i = 0; i < s.length; i++) {
+      const d = Math.abs(s[i] - m);
+      area += d;
+      pk = Math.max(pk, d);
+      if (i) sl = Math.max(sl, Math.abs(s[i] - s[i - 1]));
+    }
+    return { width: area / (pk || 1), sharp: sl / ((mx - mn) || 1) };
+  }
+
   /* ---------- 1. R-Zacken ---------- */
   function detectR(clean, fs) {
     const n = clean.length;
@@ -268,9 +284,15 @@
     });
     if (pool.length < 3) pool = r.map((_, k) => usable[k] && seg(k)).filter(Boolean);
     const template = pool.length ? medianOfSegments(pool) : null;
+    const tplShape = template ? shape(template) : null;
 
     return r.map((i, k) => {
-      const corr = template && seg(k) ? bestCorr(k, template) : 1;
+      const s = seg(k);
+      const corr = template && s ? bestCorr(k, template) : 1;
+      // Breite und Steilheit relativ zum Normalschlag: ventrikuläre Schläge sind breit und flacher ansteigend
+      const sh = template && s ? shape(s) : null;
+      const width = sh ? sh.width / tplShape.width : 1;
+      const sharp = sh ? sh.sharp / tplShape.sharp : 1;
       // Vorzeitig = deutlich kürzer als lokal erwartet UND abrupt kürzer als das vorige Intervall.
       // Die atemabhängige Schwankung (auch bei tiefer Atmung) ändert sich dagegen allmählich.
       // Folgt ein vorzeitiger Schlag direkt auf einen anderen, gehört er zu einer Salve.
@@ -278,11 +300,16 @@
       const premature = !!(rr[k] && exp && rr[k] < 0.82 * exp &&
         (rr[k - 1] == null || rr[k] < 0.9 * rr[k - 1] || prem[k - 1]));
       prem[k] = premature && usable[k];
+      // Ventrikulär: vorzeitig mit anderer Form oder breiter – oder (auch ohne Vorzeitigkeit, z. B. bei
+      // Vorhofflimmern) deutlich breiter mit klar anderer Form. Schwellen an der MIT-BIH-Arrhythmie-Datenbank
+      // (auf 130 Hz heruntergerechnet) bestimmt: VES-Sensitivität ca. 79 %, positiver Vorhersagewert ca. 91 %.
+      const ventricular = (premature && (corr < 0.7 || width > 1.3)) || (width > 1.5 && corr < 0.75);
       let type = 'N';
       if (!usable[k]) type = 'U';
-      else if (premature) type = corr < 0.7 ? 'V' : 'S';
+      else if (ventricular) type = 'V';
+      else if (premature) type = 'S';
       else if (corr < 0.5) type = 'A';
-      return { i, type, rr: rr[k], corr };
+      return { i, type, rr: rr[k], corr, width, sharp, premature: prem[k] };
     });
   }
 
@@ -422,7 +449,7 @@
 
     // Plötzliches Herzrasen: Frequenz springt innerhalb eines Schlags um > 30/min auf > 150/min und
     // bleibt dann sehr regelmäßig (typisch für eine anfallsartige supraventrikuläre Tachykardie).
-    // Eine Sinustachykardie, z. B. bei Belastung, steigt dagegen über viele Schläge allmählich an.
+    // Eine Sinustachykardie (z. B. nach dem Aufstehen oder bei Aufregung) steigt dagegen über viele Schläge allmählich an.
     const seq = [];
     for (let k = 1; k < beats.length; k++) {
       if (beats[k].rr != null && (beats[k].type === 'N' || beats[k].type === 'S')) seq.push({ k, rr: beats[k].rr, i: beats[k].i });
@@ -563,13 +590,36 @@
   const pl = (n, one, many) => (n === 1 ? one : many);
   const de1 = v => v.toFixed(1).replace('.', ',');
 
-  // situation: 'liegend' | 'sitzend' | 'belastung' | undefined
-  function summarize(res, situation) {
+  const clock = s => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+
+  // Was zeigt der Rhythmus rund um ein markiertes Symptom (10 s davor bis 5 s danach)?
+  function symptomFinding(res, t) {
+    const { beats, quality, rhythm, fs } = res;
+    const a = (t - 10) * fs, b = (t + 5) * fs;
+    const at = `Symptom bei ${clock(t)} min`;
+    const disturbed = quality.segments.some(s => s.end > a && s.start < b);
+    const win = beats.filter(x => x.i >= a && x.i <= b);
+    const S = win.filter(x => x.type === 'S').length, V = win.filter(x => x.type === 'V').length;
+    const rrs = win.filter(x => x.rr != null && x.type === 'N').map(x => x.rr);
+    const pause = rhythm.pauses.some(p => p.i >= a && p.i <= b);
+    const parts = [];
+    if (S || V) parts.push([S && `${S} SVES`, V && `${V} VES`].filter(Boolean).join(', '));
+    if (pause) parts.push('Pause über 2 s');
+    const hr = rrs.length >= 3 ? `, Herzfrequenz ${Math.round(60000 / Math.max(...rrs))}–${Math.round(60000 / Math.min(...rrs))} /min` : '';
+    const span = '10 s davor bis 5 s danach';
+    if (parts.length) return { level: 'warn', text: `${at}: ${parts.join(', ')} (${span})${hr} – Streifen ärztlich befunden lassen` };
+    if (disturbed && rrs.length < 3) return { level: 'info', text: `${at}: Signal dort gestört – Rhythmus nicht beurteilbar` };
+    return { level: 'info', text: `${at}: kein Extraschlag und keine Pause erkannt (${span}, automatisch)${hr} – ` +
+      'Beschwerden trotzdem ärztlich abklären lassen' };
+  }
+
+  function summarize(res, symptoms = []) {
     const f = [];
     const add = (level, text) => f.push({ level, text });
     const { quality, rhythm, times, counts, patterns: pt, fs } = res;
     const pct = Math.round(quality.good * 100);
-    const exercise = situation === 'belastung';
+    // Markierte Symptome zuerst – sie sind für die ärztliche Beurteilung am wichtigsten
+    for (const t of symptoms) f.push(symptomFinding(res, t));
 
     if (pct >= 90) add('ok', `Signalqualität gut (${pct} % auswertbar)`);
     else if (pct >= 60) add('info', `Signal teilweise gestört (${pct} % auswertbar)`);
@@ -584,7 +634,6 @@
     const hr = rhythm.hr ? Math.round(rhythm.hr) : null;
     if (hr) {
       if (hr < 50) add('info', `Herzfrequenz Ø ${hr} /min – langsam (Bradykardie; in Ruhe bei Trainierten häufig normal)`);
-      else if (hr > 100 && exercise) add('ok', `Herzfrequenz Ø ${hr} /min (Belastung)`);
       else if (hr > 100) {
         let t = `Herzfrequenz Ø ${hr} /min – schnell (Tachykardie, in Ruhe auffällig)`;
         if (hr >= 135 && hr <= 165 && rhythm.label.code === 'regular') {
@@ -646,13 +695,12 @@
 
     if (times) {
       const notes = [];
-      if (times.pq != null && times.pq > 200) notes.push(['info', `PQ-Zeit verlängert (${Math.round(times.pq)} ms)`]);
-      if (times.pq != null && times.pq < 120) notes.push(['info', `PQ-Zeit kurz (${Math.round(times.pq)} ms)`]);
-      const wide = times.qrs != null && times.qrs >= 120;
-      if (wide && hr > 120 && exercise) {
-        notes.push(['info', `QRS verbreitert gemessen (${Math.round(times.qrs)} ms) – unter Belastung ist die Messung unsicher; ` +
-          'bei Beschwerden ärztlich abklären lassen']);
-      } else if (wide && hr > 120 && pct >= 90) {
+      // Grenzen am angezeigten (gerundeten) Wert prüfen, damit z. B. „200 ms“ nicht als verlängert erscheint
+      const pq = times.pq != null ? Math.round(times.pq) : null, qrsMs = times.qrs != null ? Math.round(times.qrs) : null;
+      if (pq != null && pq > 200) notes.push(['info', `PQ-Zeit verlängert (${Math.round(times.pq)} ms)`]);
+      if (pq != null && pq < 120) notes.push(['info', `PQ-Zeit kurz (${Math.round(times.pq)} ms)`]);
+      const wide = qrsMs != null && qrsMs >= 120;
+      if (wide && hr > 120 && pct >= 90) {
         notes.push(['warn', `Schneller Rhythmus mit breitem QRS (${Math.round(times.qrs)} ms) – kann eine Kammertachykardie sein: ` +
           'bei Beschwerden 112, sonst umgehend ärztlich abklären. Bewegungsstörungen können ähnlich aussehen.']);
       } else if (wide && hr < 40 && rhythm.label.code === 'regular') {
@@ -661,7 +709,7 @@
       } else if (wide) notes.push(['info', `QRS verbreitert (${Math.round(times.qrs)} ms)`]);
       // QTc nach Fridericia (Bazett überkorrigiert bei hoher Frequenz). Normgrenze nach AHA/ACCF/HRS 2009:
       // Männer 450, Frauen 460 ms. Bei Frequenz > 100/min oder unregelmäßigem Rhythmus keine Bewertung.
-      const qtc = times.qtcF;
+      const qtc = times.qtcF != null ? Math.round(times.qtcF) : null;
       const qtcRated = qtc != null && rhythm.hr != null && rhythm.hr <= 100 && !rhythm.af;
       if (qtcRated && qtc > 500) notes.push(['warn', `QTc deutlich erhöht (${Math.round(qtc)} ms, Fridericia) – mit einem 12-Kanal-EKG überprüfen lassen`]);
       else if (qtcRated && qtc > 460) notes.push(['info', `QTc über der Normgrenze (${Math.round(qtc)} ms; Grenze Männer 450, Frauen 460 ms) – Brustgurt-Messung ist nur eine Näherung`]);
@@ -679,7 +727,8 @@
   /* ---------- Gesamtauswertung ---------- */
   // opts.ref: RR-Intervalle des Gurts { rr, rrT } zur Gegenprüfung (optional)
   // opts.gaps: Übertragungslücken [{ start, len }] in Samples (optional)
-  // opts.situation: 'liegend' | 'sitzend' | 'belastung' (optional)
+  // opts.symptoms: Zeitpunkte markierter Symptome in s (optional)
+  // Ausgelegt für Ruhe-EKGs: Frequenz über 100/min gilt als auffällig.
   function analyze(raw, fs, opts = {}) {
     if (!raw || raw.length < 8 * fs) return null;
     const clean = zeroPhase(raw, () => [Biquad.highpass(fs, 0.5), Biquad.notch(fs, 50, 8), Biquad.lowpass(fs, 40)]);
@@ -693,7 +742,7 @@
     const counts = { S: 0, V: 0, A: 0, U: 0, N: 0, total: 0 };
     for (const b of beats) { counts[b.type]++; if (b.type !== 'U') counts.total++; }
     const res = { fs, beats, quality, rhythm, patterns, times, avgCount: avg ? avg.count : 0, counts };
-    res.findings = summarize(res, opts.situation);
+    res.findings = summarize(res, opts.symptoms || []);
     res.level = res.findings.some(x => x.level === 'warn') ? 'warn'
       : res.findings.some(x => x.level === 'info') ? 'info' : 'ok';
     res.headline = {

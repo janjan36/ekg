@@ -1,7 +1,7 @@
 /* Erweiterte HRV aus RR-Intervallen:
  *  - Frequenzbereich (Welch-Spektrum, 4 Hz interpoliert): LF, HF, LF/HF
  *  - Poincaré (SD1, SD2), Stress-Index nach Baevsky (Wurzel, wie Kubios)
- *  - DFA α1 (4–16 Schläge) und α2 (16–64 Schläge) */
+ *  - DFA α1 (4–16 Schläge) */
 (function (global) {
   'use strict';
 
@@ -212,21 +212,8 @@
   function dfaOf(rr) {
     const { nn, share } = cleanSeries(rr);
     const tooMany = share > DFA_MAX_ARTIFACTS;
-    return {
-      a1: tooMany ? null : dfa(nn, 4, 16),
-      a2: tooMany || nn.length < 200 ? null : dfa(nn, 16, 64),
-      beats: nn.length, share, tooMany
-    };
+    return { a1: tooMany ? null : dfa(nn, 4, 16), beats: nn.length, share, tooMany };
   }
 
-  // Einordnung von DFA α1 bei Belastung (Rogers/Gronwald): 0,75 ≈ aerobe, 0,5 ≈ anaerobe Schwelle
-  function dfaZone(a1) {
-    if (a1 == null) return null;
-    if (a1 > 1.0) return { code: 'rest', text: 'Ruhe/sehr leicht (korreliert)' };
-    if (a1 >= 0.75) return { code: 'z1', text: 'unter aerober Schwelle' };
-    if (a1 >= 0.5) return { code: 'z2', text: 'zwischen aerober und anaerober Schwelle' };
-    return { code: 'z3', text: 'über anaerober Schwelle' };
-  }
-
-  global.HrvX = { frequency, poincare, stressIndex, dfaOf, dfa, dfaZone, cleanSeries, BANDS, DFA_MAX_ARTIFACTS };
+  global.HrvX = { frequency, poincare, stressIndex, dfaOf, dfa, cleanSeries, BANDS, DFA_MAX_ARTIFACTS };
 })(window);

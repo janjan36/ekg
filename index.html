@@ -70,10 +70,12 @@
           <select id="selSituation">
             <option value="liegend">Ruhe liegend</option>
             <option value="sitzend" selected>Ruhe sitzend</option>
-            <option value="belastung">Belastung</option>
           </select>
         </label>
         <span class="timer" id="timer">00:00</span>
+        <button class="btn symptom" id="btnSymptom" hidden title="Markiert die aktuelle Stelle, z. B. bei Herzstolpern, Schwindel oder Herzrasen">
+          <span class="tag M">!</span> <span id="btnSymptomLabel">Symptom markieren</span>
+        </button>
       </div>
     </section>
 
@@ -83,7 +85,6 @@
         <div class="tile"><span class="label">Herzfrequenz</span><span class="value" id="valHr">–</span><span class="unit">/min</span></div>
         <div class="tile"><span class="label">RR-Intervall</span><span class="value" id="valRr">–</span><span class="unit" id="valSignal">ms</span></div>
         <div class="tile"><span class="label">RMSSD (60 s)</span><span class="value" id="valRmssd">–</span><span class="unit">ms</span></div>
-        <div class="tile"><span class="label">DFA α1 (2 min)</span><span class="value" id="valDfa">–</span><span class="unit" id="valDfaZone">&nbsp;</span></div>
       </div>
 
       <div class="chart-head">
@@ -108,7 +109,7 @@
       </div>
       <div class="ecg-live"><canvas id="liveCanvas"></canvas></div>
       <div class="sub-label">Automatische Auswertung (letzte 30 s) – im EKG: <span class="tag S">S</span> supraventrikulärer,
-        <span class="tag V">V</span> ventrikulärer Extraschlag</div>
+        <span class="tag V">V</span> ventrikulärer Extraschlag, <span class="tag M">!</span> Symptom</div>
       <div class="analysis-live">
         <div class="al-item"><span class="label">Rhythmus</span><span id="liveRhythm">–</span></div>
         <div class="al-item"><span class="label">Extraschläge seit Verbindung</span><span id="liveEctopic">–</span></div>
@@ -135,7 +136,7 @@
           </div>
           <div>
             <dl class="stats times" id="anaTimes"></dl>
-            <div class="sub-label">Extraschläge und Störungen – Klick springt zur Stelle</div>
+            <div class="sub-label">Symptome, Extraschläge und Störungen – Klick springt zur Stelle</div>
             <div class="events" id="anaEvents"></div>
           </div>
         </div>
@@ -174,7 +175,6 @@
             <option value="">keine Angabe</option>
             <option value="liegend">Ruhe liegend</option>
             <option value="sitzend">Ruhe sitzend</option>
-            <option value="belastung">Belastung</option>
           </select>
         </label>
       </div>
@@ -185,6 +185,7 @@
         <button class="btn" id="btnCsvEcg">EKG als CSV</button>
         <button class="btn" id="btnCsvRr">RR als CSV</button>
         <button class="btn" id="btnTxtRr">RR als TXT (Kubios)</button>
+        <button class="btn" id="btnEdf" title="Europäisches Datenformat für Biosignale, z. B. für EDFbrowser">EKG als EDF+</button>
         <button class="btn primary" id="btnPdf">PDF</button>
       </div>
     </section>
@@ -204,7 +205,6 @@
             <option value="">alle Situationen</option>
             <option value="liegend">Ruhe liegend</option>
             <option value="sitzend">Ruhe sitzend</option>
-            <option value="belastung">Belastung</option>
           </select>
         </label>
         <button class="btn small" id="btnTrendTable">Als Tabelle</button>

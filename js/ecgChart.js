@@ -11,12 +11,12 @@
       paper: v('--ecg-paper'), minor: v('--ecg-grid-minor'), major: v('--ecg-grid-major'),
       trace: v('--ecg-trace'), label: v('--ecg-label'),
       tachoLine: v('--tacho-line'), tachoBad: v('--tacho-bad'), muted: v('--muted'),
-      mark: { S: v('--mark-s'), V: v('--mark-v'), A: v('--mark-a') },
+      mark: { S: v('--mark-s'), V: v('--mark-v'), A: v('--mark-a'), M: v('--mark-m') },
       markBad: v('--mark-bad'), markLine: v('--mark-line')
     };
   }
 
-  // Buchstabe über einem auffälligen Schlag (S, V, A)
+  // Buchstabe über einem auffälligen Schlag (S, V, A) bzw. „!“ für ein markiertes Symptom (M)
   function drawBeatTag(ctx, x, type, colors) {
     const color = colors.mark[type];
     if (!color) return;
@@ -30,7 +30,7 @@
     ctx.fillStyle = '#fff';
     ctx.font = 'bold 11px system-ui, sans-serif';
     ctx.textAlign = 'center';
-    ctx.fillText(type, x, 15);
+    ctx.fillText(type === 'M' ? '!' : type, x, 15);
     ctx.textAlign = 'start';
   }
 
